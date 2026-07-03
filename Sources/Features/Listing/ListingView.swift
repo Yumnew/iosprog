@@ -400,6 +400,7 @@ struct OrgListRow: View {
                 Spacer(minLength: 0)
             }
             .padding(12)
+            .opacity(isOpen ? 1 : 0.55)   // закрытую организацию приглушаем (кроме статуса)
             .background(YMColor.surface, in: RoundedRectangle(cornerRadius: YMRadius.card, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: YMRadius.card, style: .continuous)
                 .strokeBorder(YMColor.hairline, lineWidth: 1))

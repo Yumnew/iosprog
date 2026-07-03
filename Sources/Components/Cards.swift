@@ -48,6 +48,8 @@ struct OrgCard: View {
                     .frame(height: 150)
                     .frame(maxWidth: .infinity)
                     .clipped()
+                    // Закрытую организацию приглушаем (фото). Клик/сердечко остаются активны.
+                    .opacity(isOpen ? 1 : 0.55)
                     .overlay(alignment: .topLeading) {
                         StatusPill(text: isOpen ? "Открыто" : "Закрыто",
                                    kind: isOpen ? .open : .cancel, solid: true)
@@ -100,6 +102,7 @@ struct OrgCard: View {
                 .padding(.horizontal, 15)
                 .padding(.top, 13)
                 .padding(.bottom, 15)
+                .opacity(isOpen ? 1 : 0.55)   // текст закрытой организации тоже тусклый
             }
         }
         .buttonStyle(CardPressStyle())

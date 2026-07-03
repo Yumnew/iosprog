@@ -715,6 +715,7 @@ private struct FavOrgCard: View {
                 PhotoPlaceholder(url: API.imageURL(shop.cover ?? shop.banner ?? shop.logo),
                                  label: "ОБЛОЖКА", radius: 0, tone: tone)
                     .frame(height: 120).frame(maxWidth: .infinity).clipped()
+                    .opacity(isOpen ? 1 : 0.55)   // закрытую приглушаем
                     .overlay(alignment: .topLeading) {
                         StatusPill(text: isOpen ? "Открыто" : "Закрыто",
                                    kind: isOpen ? .open : .cancel, solid: true).padding(11)
@@ -747,6 +748,7 @@ private struct FavOrgCard: View {
                     }
                 }
                 .padding(.horizontal, 15).padding(.top, 12).padding(.bottom, 14)
+                .opacity(isOpen ? 1 : 0.55)   // текст закрытой организации тоже тусклый
             }
         }
         .buttonStyle(CardPressStyle())

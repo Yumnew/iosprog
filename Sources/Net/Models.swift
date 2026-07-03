@@ -181,6 +181,12 @@ struct AppNotification: Codable, Identifiable { let id: Int; let type: String?; 
     var read: Bool { (isRead ?? 0) > 0 } }
 struct OrderCreateResult: Codable {
     @LenientInt var id: Int?; @LenientInt var dailyNumber: Int?
+    // Сервер возвращает id созданного заказа под ключом order_id (→ orderId после
+    // convertFromSnakeCase). Раньше читали только id → nil → трекинг открывал id=0
+    // («заказ не найден»). Теперь резолвим оба.
+    @LenientInt var orderId: Int?
+    /// Итоговый id заказа: сначала order_id, затем id.
+    var resolvedId: Int? { orderId ?? id }
     // Движок акций: применённые акции/подарки/баллы (аддитивно, optional).
     var promotions: [AppliedPromo]? = nil
     var gifts: [PromoGift]? = nil

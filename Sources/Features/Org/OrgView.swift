@@ -207,10 +207,16 @@ struct OrgView: View {
                     .font(.system(size: 25, weight: .heavy))
                     .foregroundStyle(YMColor.text)
                     .lineLimit(2)
-                if isOpen {
-                    StatusPill(text: "Открыто", kind: .open, solid: false)
-                }
+                StatusPill(text: isOpen ? "Открыто" : "Закрыто",
+                           kind: isOpen ? .open : .cancel, solid: false)
                 Spacer(minLength: 0)
+            }
+
+            // Баннер нерабочего времени: «Сейчас закрыто. Откроется <день> в <время>» + предзаказ.
+            // Кнопки заказа/корзины остаются рабочими (предзаказ = обычное оформление).
+            if !isOpen {
+                ClosedBanner(opensLabel: OrgHours.nextOpenLabel(vm.detail?.hours))
+                    .padding(.top, 12)
             }
 
             // Подзаголовок «Тип · кухня · теги».
@@ -484,7 +490,12 @@ struct OrgView: View {
 
     // MARK: Derived
 
-    private var isOpen: Bool { vm.seed?.isOpen ?? true }
+    /// Открыто ли сейчас. Приоритет — расчёт по ShopDetail.hours (как на Android isOpenNow),
+    /// т.к. при входе по deep-link seed отсутствует. Фолбэк на seed.isOpen из списка, иначе «открыто».
+    private var isOpen: Bool {
+        if let d = vm.detail, let computed = OrgHours.isOpenNow(d.hours) { return computed }
+        return vm.seed?.isOpen ?? true
+    }
     private var rating: Double? { vm.detail?.rating ?? vm.seed?.rating }
     private var deliveryTime: String? { vm.detail?.deliveryTime ?? vm.seed?.deliveryTime }
     private var subtitle: String? {
@@ -644,6 +655,92 @@ struct OrgMiniMap: View {
             }
         }
         .allowsHitTesting(false)
+    }
+}
+
+// MARK: - ClosedBanner (баннер нерабочего времени + предзаказ)
+
+/// Заметный баннер при входе в закрытую организацию.
+/// `opensLabel` = nil → только «Сейчас закрыто» (нет данных о часах).
+struct ClosedBanner: View {
+    let opensLabel: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                Text("🕑")
+                Text(opensLabel != nil ? "Сейчас закрыто. Откроется \(opensLabel!)" : "Сейчас закрыто")
+                    .font(.system(size: 14.5, weight: .bold))
+                    .foregroundStyle(YMColor.text)
+            }
+            Text("Можно оформить предзаказ — приготовим и доставим к открытию.")
+                .font(.system(size: 12.5))
+                .foregroundStyle(YMColor.muted)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(YMColor.statusPending.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .strokeBorder(YMColor.statusPending.opacity(0.35), lineWidth: 1))
+    }
+}
+
+// MARK: - OrgHours (расчёт открыто-сейчас + ближайшее открытие)
+
+/// Логика рабочих часов по [ShopHour] (dayOfWeek 1=Пн..7=Вс, 0/7=Вс; isClosed==1 — выходной).
+/// Без падений при пустых/битых данных. Паритет с Android isOpenNow/nextOpenLabel.
+enum OrgHours {
+    /// Открыто ли сейчас. nil = нет данных (вызывающий решает — считать открытым).
+    static func isOpenNow(_ hours: [ShopHour]?) -> Bool? {
+        guard let hours, !hours.isEmpty else { return nil }
+        let cal = Calendar.current
+        let now = Date()
+        let dow = weekdayToServer(cal.component(.weekday, from: now)) // 1=Пн..7=Вс
+        guard let today = hours.first(where: { norm($0.dayOfWeek) == dow }) else { return nil }
+        if today.isClosed == 1 { return false }
+        guard let open = today.openTime?.prefix(5).description,
+              let close = today.closeTime?.prefix(5).description,
+              !open.isEmpty, !close.isEmpty else { return nil }
+        let cur = String(format: "%02d:%02d", cal.component(.hour, from: now), cal.component(.minute, from: now))
+        // Обычный интервал или «через полночь» (close <= open).
+        return close > open ? (cur >= open && cur <= close) : (cur >= open || cur <= close)
+    }
+
+    /// «сегодня в HH:MM» / «завтра в HH:MM» / «в <день недели> в HH:MM». nil = нет данных.
+    static func nextOpenLabel(_ hours: [ShopHour]?) -> String? {
+        guard let hours, !hours.isEmpty else { return nil }
+        let cal = Calendar.current
+        let now = Date()
+        let todayDow = weekdayToServer(cal.component(.weekday, from: now))
+        let cur = String(format: "%02d:%02d", cal.component(.hour, from: now), cal.component(.minute, from: now))
+        for offset in 0...7 {
+            let dow = ((todayDow - 1 + offset) % 7) + 1
+            guard let entry = hours.first(where: { norm($0.dayOfWeek) == dow }) else { continue }
+            if entry.isClosed == 1 { continue }
+            guard let open = entry.openTime?.prefix(5).description, !open.isEmpty else { continue }
+            if offset == 0 && cur >= open { continue } // сегодня уже поздно — ищем дальше
+            let whenLabel: String
+            switch offset {
+            case 0: whenLabel = "сегодня"
+            case 1: whenLabel = "завтра"
+            default: whenLabel = "в " + ruWeekday(dow)
+            }
+            return "\(whenLabel) в \(open)"
+        }
+        return nil
+    }
+
+    /// Calendar.weekday (1=Вс..7=Сб) → серверный формат (1=Пн..7=Вс).
+    private static func weekdayToServer(_ w: Int) -> Int { w == 1 ? 7 : w - 1 }
+    /// Нормализуем серверный dayOfWeek к 1..7 (0=Вс → 7).
+    private static func norm(_ dow: Int?) -> Int { let d = dow ?? 7; return d == 0 ? 7 : d }
+    /// День недели в предложном падеже (1=Пн..7=Вс).
+    private static func ruWeekday(_ dow: Int) -> String {
+        switch dow {
+        case 1: return "понедельник"; case 2: return "вторник"; case 3: return "среду"
+        case 4: return "четверг"; case 5: return "пятницу"; case 6: return "субботу"
+        default: return "воскресенье"
+        }
     }
 }
 

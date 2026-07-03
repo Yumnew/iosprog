@@ -131,14 +131,11 @@ struct HomeView: View {
             ScrollView {
                 LazyVStack(spacing: 0, pinnedViews: []) {
                     header
-                    // Поиск на Главной — витринное поле-кнопка: тап уводит на вкладку «Поиск».
-                    // allowsHitTesting(false) у поля, чтобы внутренний TextField не перехватывал тап.
-                    Button { Haptics.light(); router.requestedTab = 1 } label: {
-                        SearchField().allowsHitTesting(false)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, YMSpace.xl)
-                    .padding(.top, 14)
+                    // Поиск на Главной — витрина (text=nil), тап через собственный onTap
+                    // компонента уводит на вкладку «Поиск» (индекс 1).
+                    SearchField(onTap: { Haptics.light(); router.requestedTab = 1 })
+                        .padding(.horizontal, YMSpace.xl)
+                        .padding(.top, 14)
 
                     // Сторис-лента (баннеры города). Пусто/ошибка → сама рисует EmptyView.
                     StoriesView(cityId: session.cityId)

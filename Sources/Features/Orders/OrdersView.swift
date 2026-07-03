@@ -180,7 +180,14 @@ final class OrdersViewModel: ObservableObject {
     @Published var loadFailed = false
     private var didLoad = false
 
-    func firstLoad() async { guard !didLoad else { return }; didLoad = true; await load() }
+    /// Первый вход в таб — грузим со скелетоном. Возврат в таб (в т.ч. после
+    /// оформления заказа) — тихо обновляем список, чтобы новый заказ появился
+    /// в «Активных» без pull-to-refresh. Скелетон при этом не мигает: он
+    /// показывается только когда orders пуст (см. content).
+    func firstLoad() async {
+        if !didLoad { didLoad = true }
+        await load()
+    }
 
     func load() async {
         loading = true; loadFailed = false
@@ -243,9 +250,15 @@ struct OrdersView: View {
             }
         }
         // «Следить за заказом» из флоу корзины: RootTabView переключил таб,
-        // здесь открываем деталь и сбрасываем сигнал.
+        // здесь ПЕРЕЗАГРУЖАЕМ список (новый заказ должен появиться в «Активных»),
+        // открываем деталь и сбрасываем сигнал.
         .onChange(of: coord.pendingOrderDetail) { pending in
-            if let id = pending { pushedOrder = id; coord.pendingOrderDetail = nil }
+            if let id = pending {
+                tab = .active            // новый заказ активен — показываем нужный таб
+                pushedOrder = id
+                coord.pendingOrderDetail = nil
+                Task { await vm.load() } // всегда свежий список после оформления
+            }
         }
     }
 

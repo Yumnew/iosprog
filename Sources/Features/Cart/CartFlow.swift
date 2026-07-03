@@ -59,7 +59,7 @@ struct CartFlow: View {
             SuccessView(
                 order: r,
                 onTrack: {
-                    let id = r.id ?? 0
+                    let id = r.resolvedId ?? 0
                     onClose()
                     onTrackOrder(id)
                 },
