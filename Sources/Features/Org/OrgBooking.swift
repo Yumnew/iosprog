@@ -233,7 +233,7 @@ struct OrgBookingSection: View {
 
     // MARK: Ближайшие дни
 
-    static func nearestDays(_ count: Int) -> [DayOption] {
+    fileprivate static func nearestDays(_ count: Int) -> [DayOption] {
         var cal = Calendar(identifier: .gregorian)
         cal.locale = Locale(identifier: "ru_RU")
         let api = DateFormatter(); api.calendar = cal; api.locale = Locale(identifier: "en_US_POSIX"); api.dateFormat = "yyyy-MM-dd"

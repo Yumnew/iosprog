@@ -318,7 +318,7 @@ struct AuthView: View {
                     back(to: .code)
                 }
             } catch {
-                await fail(error, fallback: "Не удалось позвонить")
+                fail(error, fallback: "Не удалось позвонить")
             }
         }
     }
@@ -333,9 +333,9 @@ struct AuthView: View {
                 var body: [String: String] = ["phone": normalizedPhone(), "code": code.trimmingCharacters(in: .whitespaces)]
                 if !trimmedName.isEmpty { body["name"] = trimmedName }
                 let t: AuthTokens = try await API.shared.post("api/v1/auth/otp-verify", body: body)
-                await finish(t)
+                finish(t)
             } catch {
-                await fail(error, fallback: "Неверный код")
+                fail(error, fallback: "Неверный код")
             }
         }
     }
@@ -350,9 +350,9 @@ struct AuthView: View {
                     "api/v1/auth/login",
                     body: ["login": loginField.trimmingCharacters(in: .whitespaces), "password": password]
                 )
-                await finish(t)
+                finish(t)
             } catch {
-                await fail(error, fallback: "Неверный логин или пароль")
+                fail(error, fallback: "Неверный логин или пароль")
             }
         }
     }

@@ -280,10 +280,10 @@ struct JobDetailView: View {
                 }
 
                 if let d = j.description, !d.isEmpty {
-                    SectionBlock(title: "Описание", body: d)
+                    SectionBlock(title: "Описание", text: d)
                 }
                 if let r = j.requirements, !r.isEmpty {
-                    SectionBlock(title: "Требования", body: r)
+                    SectionBlock(title: "Требования", text: r)
                 }
 
                 if let banner {
