@@ -123,16 +123,22 @@ struct HomeView: View {
 
     // Смена города с шапки Главной.
     @State private var showCitySheet = false
+    // Профиль открывается из шапки (кнопка в правом углу) — модально.
+    @State private var showProfile = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 LazyVStack(spacing: 0, pinnedViews: []) {
                     header
-                    SearchField()
-                        .padding(.horizontal, YMSpace.xl)
-                        .padding(.top, 14)
-                        .onTapGesture { router.requestedTab = 1 }   // → вкладка Поиск
+                    // Поиск на Главной — витринное поле-кнопка: тап уводит на вкладку «Поиск».
+                    // allowsHitTesting(false) у поля, чтобы внутренний TextField не перехватывал тап.
+                    Button { Haptics.light(); router.requestedTab = 1 } label: {
+                        SearchField().allowsHitTesting(false)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, YMSpace.xl)
+                    .padding(.top, 14)
 
                     // Сторис-лента (баннеры города). Пусто/ошибка → сама рисует EmptyView.
                     StoriesView(cityId: session.cityId)
@@ -180,6 +186,14 @@ struct HomeView: View {
                     Task { await vm.load(session: session) }
                 }
             }
+            // Профиль модально (вкладки профиля больше нет — доступ из шапки).
+            .sheet(isPresented: $showProfile) {
+                ProfileView()
+                    .environmentObject(session)
+                    .environmentObject(Cart.shared)
+                    .environmentObject(DeepLinkRouter.shared)
+                    .environmentObject(NavCoordinator.shared)
+            }
         }
     }
 
@@ -215,14 +229,20 @@ struct HomeView: View {
         .padding(.top, 6)
     }
 
+    // Кнопка профиля в правом углу шапки (профиль убран из нижних вкладок).
     private var avatar: some View {
-        let initial = String((session.cityName ?? "Я").prefix(1)).uppercased()
-        return Text(initial)
-            .font(.system(size: 15, weight: .bold))
-            .foregroundStyle(YMColor.accent)
-            .frame(width: 42, height: 42)
-            .background(YMColor.surface2, in: Circle())
-            .overlay(Circle().strokeBorder(YMColor.accent, lineWidth: 1.5))
+        Button {
+            Haptics.selection()
+            showProfile = true
+        } label: {
+            Image(systemName: "person.fill")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(YMColor.accent)
+                .frame(width: 42, height: 42)
+                .background(YMColor.surface2, in: Circle())
+                .overlay(Circle().strokeBorder(YMColor.accent, lineWidth: 1.5))
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: Content

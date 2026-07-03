@@ -47,17 +47,22 @@ struct RootTabView: View {
                     .tabItem { Label("Поиск", systemImage: "magnifyingglass") }
                     .tag(1)
 
-                FavoritesScreen()
-                    .tabItem { Label("Избранное", systemImage: "heart.fill") }
+                // Корзина как вкладка (Корзина → Оформление → Успех) через CartFlow.
+                CartFlow(
+                    onClose: { tab = 0 },
+                    onTrackOrder: { id in coord.pendingOrderDetail = id; tab = 3 }
+                )
+                    .tabItem { Label("Корзина", systemImage: "cart.fill") }
                     .tag(2)
+                    .badge(cart.count == 0 ? 0 : cart.count)
 
                 OrdersView(onOpen: { _ in })
                     .tabItem { Label("Заказы", systemImage: "bag.fill") }
                     .tag(3)
-                    .badge(cart.count == 0 ? 0 : cart.count)
 
-                ProfileView()
-                    .tabItem { Label("Профиль", systemImage: "person.crop.circle.fill") }
+                // Профиль убран из вкладок — открывается из шапки Главной.
+                FavoritesScreen()
+                    .tabItem { Label("Избранное", systemImage: "heart.fill") }
                     .tag(4)
             }
         }
