@@ -11,12 +11,18 @@ import SwiftUI
 //  API — реальные методы старого клиента (контракт НЕ меняется):
 //    POST api/v1/delivery/quote            -> DeliveryQuote   (расчёт доставки по адресу)
 //    GET  api/v1/profile/addresses         -> [Address]       (сохранённые адреса)
+//    GET  api/address/suggest?q=…          -> [AddrSuggest]   (Dadata-прокси, токен на сервере)
+//    POST api/v1/profile/addresses         -> (создание адреса, AddressBody)
 //    GET  api/v1/shops/{slug}              -> ShopDetail      (сервисный сбор)
 //    POST api/v1/orders                    -> OrderCreateResult (создание заказа)
 //
-//  Зона доставки определяется на сервере СКРЫТО по координатам адреса (клиент видит
-//  только результат — цену/недоступность). Выбор зоны НЕ показываем.
+//  Зона доставки определяется на сервере СКРЫТО по координатам адреса. Клиент видит только
+//  результат: DeliveryQuote.available == false → адрес вне зоны, «Оформить заказ» блокируется.
 //  Деньги — только Decimal через Money.format(Money.parse(...)). Токены — YM*.
+//
+//  Паритет с Android (9 Android-client-new): выбор сохранённых адресов радио-строкой,
+//  «＋ Добавить новый адрес», форма без города (город из Session.cityName), Dadata-подсказки
+//  строго по выбранному городу, блокировка CTA при outOfZone/noAddress, оплата «Наличные/Картой».
 //
 
 // ── Тело создания заказа (контракт как в старом клиенте, snake_case) ──
@@ -38,6 +44,21 @@ private struct OrderBody: Encodable {
 private struct QuoteBody: Encodable { let shopId: Int; let lat: Double; let lng: Double; let subtotal: Double
     enum CodingKeys: String, CodingKey { case shopId = "shop_id", lat, lng, subtotal } }
 
+// Тело создания адреса (POST api/v1/profile/addresses). camelCase → snake_case автоматически.
+// Совпадает 1:1 с AddressBody профиля и AddressReq Android.
+private struct NewAddressBody: Encodable {
+    let label: String
+    let city: String?
+    let street: String
+    let house: String?
+    let apartment: String?
+    let entrance: String?
+    let floor: String?
+    let intercom: String?
+    let lat: Double?
+    let lng: Double?
+}
+
 // Способ получения (в макете 3 сегмента; delivery/pickup + за столик = dine_in).
 private enum Fulfillment: String, CaseIterable, Hashable {
     case delivery, pickup, dineIn
@@ -51,6 +72,13 @@ private enum Fulfillment: String, CaseIterable, Hashable {
     }
 }
 
+// Способ оплаты. «Картой» — это онлайн-оплата (серверу paymentType="online"), «Наличные» → "cash".
+private enum Payment: String, CaseIterable, Hashable {
+    case cash, card
+    var apiValue: String { self == .card ? "online" : "cash" }
+    var title: String { self == .card ? "Картой" : "Наличные" }
+}
+
 struct CheckoutView: View {
     var onSuccess: (OrderCreateResult) -> Void = { _ in }
     var onBack: () -> Void = {}
@@ -58,6 +86,7 @@ struct CheckoutView: View {
     @ObservedObject private var cart = Cart.shared
 
     @State private var fulfillment: Fulfillment = .delivery
+    @State private var payment: Payment = .cash
     @State private var addresses: [Address] = []
     @State private var selectedAddress: Address?
     @State private var shop: ShopDetail?
@@ -65,7 +94,10 @@ struct CheckoutView: View {
     @State private var comment = ""
     @State private var placing = false
     @State private var errorText: String?
-    @State private var showAddressPicker = false
+    @State private var showAddAddress = false
+
+    // Город из настроек — клиент его НЕ вводит (шапка «Ваш город»).
+    private var cityName: String { Session.shared.cityName ?? "" }
 
     // MARK: - Деньги (всё Decimal)
 
@@ -80,6 +112,25 @@ struct CheckoutView: View {
     private var serviceFee: Decimal { Money.parse(Fees.service(subtotal: cart.total, shop: shop)) }
     private var grandTotal: Decimal { max(0, subtotal + deliveryCost + serviceFee) }
 
+    // MARK: - Блокировка CTA (паритет с Android: outOfZone / noAddress / belowMin)
+
+    // Адрес вне зоны доставки: сервер вернул quote.available == false.
+    private var outOfZone: Bool {
+        fulfillment == .delivery && quote != nil && quote?.available == false
+    }
+    // Для доставки обязателен выбранный адрес с координатами.
+    private var noAddress: Bool {
+        fulfillment == .delivery &&
+        (selectedAddress == nil || selectedAddress?.lat == nil || selectedAddress?.lng == nil)
+    }
+    // Минимальная сумма не набрана.
+    private var belowMin: Bool {
+        fulfillment == .delivery && quote?.belowMin == true
+    }
+    private var ctaEnabled: Bool {
+        !placing && !cart.isEmpty && !outOfZone && !noAddress && !belowMin
+    }
+
     var body: some View {
         ZStack {
             YMColor.bg.ignoresSafeArea()
@@ -90,7 +141,13 @@ struct CheckoutView: View {
             }
         }
         .navigationBarHidden(true)
-        .sheet(isPresented: $showAddressPicker) { addressPicker }
+        .sheet(isPresented: $showAddAddress, onDismiss: { Task { await loadAddresses() } }) {
+            AddAddressSheet(cityName: cityName) { newAddr in
+                // Свежесозданный адрес выбираем и сразу считаем доставку.
+                selectedAddress = newAddr
+                Task { await loadAddresses(selectAfter: newAddr) }
+            }
+        }
         .task {
             await loadAddresses()
             if let slug = cart.shopSlug {
@@ -135,13 +192,22 @@ struct CheckoutView: View {
                 YMSegmented(options: Fulfillment.allCases, selection: $fulfillment) { $0.title }
 
                 if fulfillment == .delivery {
-                    addressCard.padding(.top, YMSpace.md)
+                    addressSelector.padding(.top, YMSpace.md)
+                    if outOfZone {
+                        Text(quote?.reason?.isEmpty == false ? quote!.reason! : "Доставка по этому адресу недоступна")
+                            .font(YMFont.caption).foregroundStyle(YMColor.statusCancel)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, YMSpace.sm)
+                    }
                 }
 
                 SectionKicker("Ваш заказ").padding(.top, YMSpace.lg).padding(.bottom, YMSpace.md)
                 VStack(spacing: YMSpace.md) {
                     ForEach(cart.lines) { line in CheckoutRow(line: line) }
                 }
+
+                SectionKicker("Оплата").padding(.top, YMSpace.lg).padding(.bottom, YMSpace.sm)
+                YMSegmented(options: Payment.allCases, selection: $payment) { $0.title }
 
                 commentField.padding(.top, YMSpace.lg)
 
@@ -181,48 +247,75 @@ struct CheckoutView: View {
         return s.isEmpty ? "•" : String(s.prefix(1)).uppercased()
     }
 
-    // Карточка адреса. Зона доставки определяется молча (сервер) — не показываем выбор зоны.
-    private var addressCard: some View {
-        Button(action: { Haptics.light(); showAddressPicker = true }) {
-            HStack(spacing: YMSpace.md) {
-                Text("📍").font(.system(size: 20))
-                VStack(alignment: .leading, spacing: 2) {
-                    if let a = selectedAddress {
-                        Text(a.display.isEmpty ? "Адрес" : a.display)
-                            .font(.system(size: 14, weight: .bold)).foregroundStyle(YMColor.text)
-                            .lineLimit(1)
-                        Text(zoneSubtitle(a))
-                            .font(YMFont.caption).foregroundStyle(YMColor.muted).lineLimit(1)
-                    } else {
-                        Text("Выберите адрес доставки")
-                            .font(.system(size: 14, weight: .bold)).foregroundStyle(YMColor.text)
-                        Text("Зона доставки определится автоматически")
-                            .font(YMFont.caption).foregroundStyle(YMColor.muted)
+    // MARK: - Выбор сохранённого адреса (радио-строки) + «＋ Добавить новый адрес»
+
+    private var addressSelector: some View {
+        VStack(spacing: YMSpace.xs) {
+            if addresses.isEmpty {
+                Text("Нет сохранённых адресов")
+                    .font(YMFont.subhead).foregroundStyle(YMColor.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10).padding(.vertical, 10)
+            } else {
+                ForEach(addresses) { a in
+                    Button(action: { Haptics.light(); selectAddress(a) }) {
+                        addressRow(a)
                     }
+                    .buttonStyle(.plain)
                 }
-                Spacer()
-                Text(selectedAddress == nil ? "Выбрать" : "Изм.")
-                    .font(.system(size: 12, weight: .bold)).foregroundStyle(YMColor.accent)
             }
-            .padding(14)
-            .background(YMColor.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(YMColor.hairline, lineWidth: 1))
+
+            // ＋ Добавить новый адрес
+            Button(action: { Haptics.light(); showAddAddress = true }) {
+                HStack(spacing: YMSpace.sm) {
+                    Text("＋").font(.system(size: 17, weight: .bold)).foregroundStyle(YMColor.accent)
+                    Text("Добавить новый адрес")
+                        .font(.system(size: 14, weight: .semibold)).foregroundStyle(YMColor.accent)
+                    Spacer()
+                }
+                .padding(.horizontal, 10).padding(.vertical, 12)
+            }
+            .buttonStyle(.plain)
+
+            // ETA доставки / минимум — только для выбранного адреса.
+            if let q = quote, q.available, let tmin = q.timeMin, let tmax = q.timeMax, tmax > 0 {
+                Text("\(tmin)–\(tmax) мин")
+                    .font(YMFont.caption).foregroundStyle(YMColor.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10).padding(.vertical, 2)
+            }
+            if belowMin, let q = quote {
+                Text("Минимальная сумма заказа: \(Money.format(Money.parse(q.minOrder ?? 0)))")
+                    .font(YMFont.caption).foregroundStyle(YMColor.statusCancel)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10).padding(.vertical, 2)
+            }
         }
-        .buttonStyle(.plain)
+        .padding(YMSpace.xs)
+        .background(YMColor.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(YMColor.hairline, lineWidth: 1))
     }
 
-    // Подпись под адресом: зона определена + признак недоступности/минимума.
-    private func zoneSubtitle(_ a: Address) -> String {
-        var parts: [String] = []
-        if let ent = a.entrance, !ent.isEmpty { parts.append("Подъезд \(ent)") }
-        if let fl = a.floor, !fl.isEmpty { parts.append("этаж \(fl)") }
-        if let q = quote {
-            if !q.available { parts.append(q.reason ?? "доставка недоступна") }
-            else { parts.append("зона доставки определена") }
-        } else {
-            parts.append("зона доставки определена")
+    private func addressRow(_ a: Address) -> some View {
+        let isSel = selectedAddress?.id == a.id
+        return HStack(spacing: YMSpace.md) {
+            // radio-индикатор
+            ZStack {
+                Circle().strokeBorder(isSel ? YMColor.accent : YMColor.hairline, lineWidth: 2)
+                if isSel { Circle().fill(YMColor.accent).frame(width: 10, height: 10) }
+            }
+            .frame(width: 20, height: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(a.label?.isEmpty == false ? a.label! : "Адрес")
+                    .font(.system(size: 15, weight: .semibold)).foregroundStyle(YMColor.text)
+                Text(a.display.isEmpty ? "Адрес без деталей" : a.display)
+                    .font(YMFont.caption).foregroundStyle(YMColor.muted).lineLimit(2)
+            }
+            Spacer(minLength: 0)
         }
-        return parts.joined(separator: " · ")
+        .padding(.horizontal, 10).padding(.vertical, 10)
+        .background(isSel ? YMColor.surface2 : Color.clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .contentShape(Rectangle())
     }
 
     private var commentField: some View {
@@ -288,7 +381,7 @@ struct CheckoutView: View {
                 }
             }
             .buttonStyle(YMPrimaryButtonStyle())
-            .disabled(placing || cart.isEmpty)
+            .disabled(!ctaEnabled)
         }
         .padding(.horizontal, YMSpace.lg)
         .padding(.top, YMSpace.lg)
@@ -301,55 +394,31 @@ struct CheckoutView: View {
         )
     }
 
-    // MARK: - Address picker (нижняя шторка)
-
-    private var addressPicker: some View {
-        NavigationStack {
-            List {
-                if addresses.isEmpty {
-                    Text("Нет сохранённых адресов. Добавьте адрес в профиле.")
-                        .font(YMFont.body).foregroundStyle(YMColor.muted)
-                }
-                ForEach(addresses) { a in
-                    Button {
-                        selectedAddress = a
-                        showAddressPicker = false
-                        Task { await quoteDelivery() }
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(a.label?.isEmpty == false ? a.label! : "Адрес")
-                                    .font(.system(size: 15, weight: .semibold)).foregroundStyle(YMColor.text)
-                                Text(a.display).font(YMFont.caption).foregroundStyle(YMColor.muted)
-                            }
-                            Spacer()
-                            if selectedAddress?.id == a.id {
-                                Image(systemName: "checkmark").foregroundStyle(YMColor.accent)
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Адрес доставки")
-            .navigationBarTitleDisplayMode(.inline)
-        }
-        .presentationDetents([.medium, .large])
-    }
-
     // MARK: - Загрузка / расчёт
 
-    private func loadAddresses() async {
+    // Загрузка списка адресов. selectAfter — если задан, выбрать именно его (после создания).
+    private func loadAddresses(selectAfter: Address? = nil) async {
         do {
             let list: [Address] = try await API.shared.list("api/v1/profile/addresses")
             await MainActor.run {
                 addresses = list
-                // По умолчанию — основной адрес (с координатами) → сразу считается доставка.
-                selectedAddress = list.first(where: { $0.isDefaultBool }) ?? list.first
+                if let want = selectAfter,
+                   let match = list.first(where: { $0.id == want.id }) ?? list.max(by: { $0.id < $1.id }) {
+                    selectedAddress = match
+                } else if selectedAddress == nil {
+                    // По умолчанию — основной адрес (с координатами) → сразу считается доставка.
+                    selectedAddress = list.first(where: { $0.isDefaultBool }) ?? list.first
+                }
             }
             await quoteDelivery()
         } catch {
             // graceful: адресов нет — покажем плейсхолдер, доставка = уточняется.
         }
+    }
+
+    private func selectAddress(_ a: Address) {
+        selectedAddress = a
+        Task { await quoteDelivery() }
     }
 
     // Серверный расчёт доставки по координатам адреса. shop_id — из корзины.
@@ -388,7 +457,7 @@ struct CheckoutView: View {
     // MARK: - Создание заказа
 
     private func placeOrder() {
-        guard let shopId = cart.shopId, !cart.isEmpty else { errorText = "Корзина пуста"; return }
+        guard ctaEnabled, let shopId = cart.shopId, !cart.isEmpty else { return }
         if fulfillment == .delivery {
             if selectedAddress == nil { errorText = "Выберите адрес доставки"; return }
             if let q = quote, !q.available { errorText = q.reason ?? "Доставка по этому адресу недоступна"; return }
@@ -408,9 +477,7 @@ struct CheckoutView: View {
         let body = OrderBody(
             shopId: shopId, items: items,
             deliveryType: fulfillment.apiValue,
-            // TODO(API): выбор способа оплаты в этом блоке не показывается (по макету).
-            // Значение "cash" — безопасный дефолт; оплата уточняется на следующем шаге.
-            paymentType: "cash",
+            paymentType: payment.apiValue,   // "cash" | "online" («Картой» → online)
             address: fulfillment == .delivery ? composedAddress() : nil,
             comment: trimmed.isEmpty ? nil : trimmed,
             deliveryPrice: dp,
@@ -433,6 +500,148 @@ struct CheckoutView: View {
                     errorText = error.localizedDescription
                     placing = false
                 }
+            }
+        }
+    }
+}
+
+// MARK: - Форма нового адреса (шторка). Город НЕ вводится — из Session.cityName.
+//         Улица — Dadata-подсказки строго по выбранному городу.
+
+private struct AddAddressSheet: View {
+    let cityName: String
+    var onSaved: (Address) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var label = "Дом"
+    @State private var street = ""
+    @State private var house = ""
+    @State private var apartment = ""
+    @State private var entrance = ""
+    @State private var floor = ""
+    @State private var intercom = ""
+    @State private var lat: Double?
+    @State private var lng: Double?
+
+    @State private var suggestions: [AddrSuggest] = []
+    @State private var suggestTask: Task<Void, Never>?
+    @State private var suppressSuggest = false
+    @State private var saving = false
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section { TextField("Название (Дом, Работа…)", text: $label) }
+                Section("Адрес") {
+                    // Город берётся из настроек — не поле ввода.
+                    if !cityName.isEmpty {
+                        HStack { Text("Город"); Spacer(); Text(cityName).foregroundStyle(YMColor.muted) }
+                    }
+                    TextField("Улица", text: $street)
+                        .onChange(of: street) { v in scheduleSuggest(v) }
+                    // Подсказки Dadata, отфильтрованные по выбранному городу.
+                    ForEach(suggestions) { s in
+                        Button { pick(s) } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "mappin.circle").foregroundStyle(YMColor.muted)
+                                Text(suggestLine(s)).foregroundStyle(YMColor.text)
+                                Spacer()
+                            }
+                        }
+                    }
+                    TextField("Дом", text: $house)
+                    TextField("Квартира (по желанию)", text: $apartment).keyboardType(.numbersAndPunctuation)
+                    TextField("Подъезд (по желанию)", text: $entrance).keyboardType(.numbersAndPunctuation)
+                    TextField("Этаж (по желанию)", text: $floor).keyboardType(.numbersAndPunctuation)
+                    TextField("Домофон (по желанию)", text: $intercom).keyboardType(.numbersAndPunctuation)
+                }
+                if let e = error { Text(e).foregroundStyle(YMColor.statusCancel).font(YMFont.caption) }
+                Section {
+                    Button(action: save) {
+                        HStack { Spacer()
+                            if saving { ProgressView() } else { Text("Сохранить").fontWeight(.bold) }
+                            Spacer() }
+                    }
+                    .disabled(saving)
+                }
+            }
+            .navigationTitle("Новый адрес")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Отмена") { dismiss() } } }
+        }
+        .tint(YMColor.accent)
+        .presentationDetents([.large])
+    }
+
+    private func suggestLine(_ s: AddrSuggest) -> String {
+        var line = s.street ?? ""
+        if let h = s.house, !h.isEmpty { line += (line.isEmpty ? "" : ", ") + "д. \(h)" }
+        return line.isEmpty ? (s.value ?? "") : line
+    }
+
+    // Подсказки адреса (Dadata через сервер). Дебаунс 300 мс. Только выбранный город.
+    private func scheduleSuggest(_ text: String) {
+        suggestTask?.cancel()
+        lat = nil; lng = nil   // новый ввод улицы — координаты недействительны, пока не выбрана подсказка
+        if suppressSuggest { suppressSuggest = false; suggestions = []; return }
+        let q = text.trimmingCharacters(in: .whitespaces)
+        guard q.count >= 3 else { suggestions = []; return }
+        // Запрос строим как «<Город>, <ввод>» — Dadata приоритезирует этот город.
+        let query = cityName.isEmpty ? q : "\(cityName), \(q)"
+        suggestTask = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            if Task.isCancelled { return }
+            let res: [AddrSuggest] = (try? await API.shared.get("api/address/suggest", query: ["q": query])) ?? []
+            if Task.isCancelled { return }
+            // Дополнительная фильтрация: остаются только адреса выбранного города
+            // (или без города — если прокси не вернул city), чтобы улицы других городов не лезли.
+            let filtered = res.filter { s in
+                cityName.isEmpty || (s.city?.isEmpty ?? true) || s.city?.caseInsensitiveCompare(cityName) == .orderedSame
+            }
+            await MainActor.run { suggestions = filtered }
+        }
+    }
+
+    // Выбор подсказки: заполняем улицу/дом/координаты.
+    private func pick(_ s: AddrSuggest) {
+        suppressSuggest = true
+        street = s.street?.isEmpty == false ? s.street! : (s.value ?? street)
+        if let h = s.house, !h.isEmpty { house = h }
+        lat = s.lat; lng = s.lng
+        suggestions = []
+    }
+
+    private func save() {
+        if street.trimmingCharacters(in: .whitespaces).isEmpty { error = "Укажите улицу"; return }
+        if lat == nil || lng == nil { error = "Выберите адрес из подсказок"; return }
+        saving = true; error = nil
+        let body = NewAddressBody(
+            label: label.trimmingCharacters(in: .whitespaces).isEmpty ? "Адрес" : label,
+            city: cityName.isEmpty ? nil : cityName,
+            street: street,
+            house: house.isEmpty ? nil : house,
+            apartment: apartment.isEmpty ? nil : apartment,
+            entrance: entrance.isEmpty ? nil : entrance,
+            floor: floor.isEmpty ? nil : floor,
+            intercom: intercom.isEmpty ? nil : intercom,
+            lat: lat, lng: lng
+        )
+        // Локальный объект — чтобы сразу выбрать созданный адрес (id уточнится при перезагрузке списка).
+        let optimistic = Address(
+            id: Int.min, label: label, city: cityName.isEmpty ? nil : cityName,
+            street: street, house: house.isEmpty ? nil : house,
+            apartment: apartment.isEmpty ? nil : apartment, entrance: entrance.isEmpty ? nil : entrance,
+            floor: floor.isEmpty ? nil : floor, intercom: intercom.isEmpty ? nil : intercom,
+            lat: lat, lng: lng, isDefault: nil
+        )
+        Task {
+            do {
+                try await API.shared.postVoid("api/v1/profile/addresses", body: body)
+                await MainActor.run { Haptics.success(); onSaved(optimistic); dismiss() }
+            } catch {
+                await MainActor.run { Haptics.error(); self.error = error.localizedDescription; saving = false }
             }
         }
     }

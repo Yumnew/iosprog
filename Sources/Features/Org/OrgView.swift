@@ -31,6 +31,11 @@ final class OrgViewModel: ObservableObject {
     @Published var loading = true
     @Published var error: String?
 
+    // Отзывы (грузятся в фоне для всех типов организаций).
+    @Published var reviews: [Review] = []
+    @Published var reviewsLoading = true
+    @Published var reviewsError: String?
+
     /// Slug — единственный ключ загрузки (у Shop и у deep-link он общий).
     let slug: String
     /// Опорные данные для мгновенного hero до прихода detail.
@@ -39,8 +44,12 @@ final class OrgViewModel: ObservableObject {
     init(shop: Shop) { self.slug = shop.slug ?? ""; self.seed = shop }
     init(shopSlug: String) { self.slug = shopSlug; self.seed = nil }
 
-    /// Услуга ли это (есть services и нет products) — определяет набор способов получения.
-    var isService: Bool { !services.isEmpty && products.isEmpty }
+    /// Услуга ли это. Приоритет — серверный признак `mode == "service"` (как на Android);
+    /// фолбэк на эвристику (есть услуги и нет товаров) — на случай старого ответа без `mode`.
+    var isService: Bool {
+        if let m = detail?.mode?.lowercased() { return m == "service" }
+        return !services.isEmpty && products.isEmpty
+    }
 
     func load() async {
         guard !slug.isEmpty else { error = "Нет данных заведения"; loading = false; return }
@@ -56,12 +65,27 @@ final class OrgViewModel: ObservableObject {
             self.error = error.localizedDescription
         }
         loading = false
-        // Услуги догружаем в фоне, не задерживая показ.
+        // Услуги догружаем в фоне (нужны только для фолбэк-эвристики isService).
         Task { @MainActor in
             if let r: ServicesResponse = try? await API.shared.get("api/v1/shops/\(slug)/services") {
                 services = r.services ?? []
             }
         }
+        // Отзывы — в фоне, не задерживая показ карточки.
+        Task { @MainActor in await loadReviews() }
+    }
+
+    /// Отзывы заведения: GET api/v1/shops/{slug}/reviews -> [Review].
+    func loadReviews() async {
+        guard !slug.isEmpty else { reviewsLoading = false; return }
+        reviewsLoading = true; reviewsError = nil
+        do {
+            reviews = try await API.shared.list("api/v1/shops/\(slug)/reviews")
+        } catch is CancellationError {
+        } catch {
+            reviewsError = error.localizedDescription
+        }
+        reviewsLoading = false
     }
 }
 
@@ -81,6 +105,7 @@ struct OrgView: View {
     @State private var activeCat: Int = 0
     @State private var pushedProduct: Int?
     @State private var pushedService: ServiceItem?
+    @State private var showAuth = false
 
     private let heroHeight: CGFloat = 308
 
@@ -114,6 +139,11 @@ struct OrgView: View {
             get: { pushedService != nil },
             set: { if !$0 { pushedService = nil } }
         )) { if let s = pushedService { ProductView(service: s, shopName: vm.detail?.name) } }
+        // Вход для гостя при попытке записи на услугу (self-contained шит).
+        .sheet(isPresented: $showAuth) {
+            AuthView { showAuth = false }
+                .environmentObject(Session.shared)
+        }
     }
 
     // MARK: Content (parallax hero + sheet)
@@ -223,12 +253,23 @@ struct OrgView: View {
             addressCard
                 .padding(.top, 16)
 
-            // Услуга или меню.
+            // Услуга (запись) или меню.
             if vm.isService {
-                servicesSection.padding(.top, 20)
+                OrgBookingSection(slug: vm.slug, detail: vm.detail) { showAuth = true }
+                    .padding(.top, 20)
             } else {
                 menuSection.padding(.top, 20)
             }
+
+            // Отзывы — для всех типов организаций.
+            OrgReviewsSection(
+                reviews: vm.reviews,
+                loading: vm.reviewsLoading,
+                error: vm.reviewsError,
+                avgRating: rating,
+                reviewsCount: vm.detail?.reviewsCount ?? vm.seed?.reviewsCount
+            )
+            .padding(.top, 20)
 
             // Отступ под липкую корзину + FAB.
             Color.clear.frame(height: cart.count > 0 ? 150 : 96)
@@ -320,50 +361,6 @@ struct OrgView: View {
                 }
             }
             .padding(.top, 12)
-        }
-    }
-
-    // MARK: Services (услуга)
-
-    private var servicesSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Услуги")
-                .font(YMFont.title3)
-                .foregroundStyle(YMColor.text)
-            ForEach(vm.services) { s in
-                Button {
-                    Haptics.light()
-                    pushedService = s
-                } label: {
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(s.name ?? "—")
-                                .font(.system(size: 15.5, weight: .bold))
-                                .foregroundStyle(YMColor.text)
-                                .lineLimit(2)
-                            if let dm = s.durationMin, dm > 0 {
-                                Text("\(dm) мин")
-                                    .font(.system(size: 12.5))
-                                    .foregroundStyle(YMColor.muted)
-                            }
-                        }
-                        Spacer(minLength: 8)
-                        Text("от \(Money.format(Money.dec(s.price)))")
-                            .font(.system(size: 14, weight: .heavy))
-                            .foregroundStyle(YMColor.text)
-                        Text("Записаться")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(YMColor.onAccent)
-                            .padding(.horizontal, 12).padding(.vertical, 7)
-                            .background(YMColor.accent, in: Capsule())
-                    }
-                    .padding(14)
-                    .background(YMColor.surface, in: RoundedRectangle(cornerRadius: YMRadius.card, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: YMRadius.card, style: .continuous)
-                        .strokeBorder(YMColor.hairline, lineWidth: 1))
-                }
-                .buttonStyle(CardPressStyle())
-            }
         }
     }
 

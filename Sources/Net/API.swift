@@ -176,6 +176,27 @@ final class API {
         return p.items
     }
     func postVoid(_ path: String, body: Encodable? = nil) async throws { _ = try await send(try makeRequest("POST", path, body: body), as: EmptyResp.self) }
+
+    /// POST с телом application/x-www-form-urlencoded.
+    /// Нужен там, где сервер читает поля из `$_POST` (PHP не наполняет $_POST из JSON-тела),
+    /// например отклик на вакансию: POST api/v1/jobs/{id}/apply {name, phone}.
+    /// Совпадает с Android @FormUrlEncoded — контракт 1:1.
+    func postForm<T: Decodable>(_ path: String, form: [String: String]) async throws -> T {
+        let url = URLComponents(string: API.base + "/" + path)!.url!
+        // percent-кодирование значений (пробелы, кириллица, '+', '&', '=' и т.п.)
+        var enc = CharacterSet.urlQueryAllowed
+        enc.remove(charactersIn: "+&=")
+        let bodyStr = form.map { key, value in
+            "\(key)=\(value.addingPercentEncoding(withAllowedCharacters: enc) ?? value)"
+        }.joined(separator: "&")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        if let token = UserDefaults.standard.string(forKey: "token") { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        req.httpBody = bodyStr.data(using: .utf8)
+        return try await send(req, as: T.self)
+    }
+    func postFormVoid(_ path: String, form: [String: String]) async throws { _ = try await postForm(path, form: form) as EmptyResp }
     func deleteVoid(_ path: String) async throws { _ = try await send(try makeRequest("DELETE", path), as: EmptyResp.self) }
     func putVoid(_ path: String, body: Encodable? = nil) async throws { _ = try await send(try makeRequest("PUT", path, body: body), as: EmptyResp.self) }
 }

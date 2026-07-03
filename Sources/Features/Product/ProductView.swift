@@ -30,6 +30,9 @@ final class ProductViewModel: ObservableObject {
     @Published var loading = true
     @Published var error: String?
     @Published var booked = false
+    /// Похожие товары: GET api/v1/products/{id}/recommended -> [Product].
+    /// Пусто/ошибка — секция просто не рисуется, карточку не ломает.
+    @Published var recommended: [Product] = []
 
     let mode: Mode
     let productId: Int?
@@ -54,6 +57,10 @@ final class ProductViewModel: ObservableObject {
             } catch is CancellationError {
             } catch {
                 self.error = error.localizedDescription
+            }
+            // Похожие товары грузим отдельно: ошибка/пусто не мешает карточке товара.
+            if let list: [Product] = try? await API.shared.list("api/v1/products/\(id)/recommended") {
+                recommended = list.filter { $0.id != id }
             }
         case .service:
             guard let s = service else { error = "Нет данных услуги"; loading = false; return }
@@ -86,6 +93,8 @@ struct ProductView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var isFav = false
+    // Флаг: isFav меняется программно (загрузка с сервера) — не слать тоггл в ответ.
+    @State private var favSyncing = false
     @State private var photoIndex = 0
 
     // product state
@@ -93,6 +102,8 @@ struct ProductView: View {
     @State private var checkedAddons: Set<Int> = []    // id выбранных чекбоксов (Добавить к блюду)
     @State private var qty: Double = 1
     @State private var added = false
+    // Весовой/дробный товар: выбранный вес-пресет (0.3 / 0.5 / 1 кг). Для штучных не используется.
+    @State private var selectedWeight: Double = 0
 
     // service state
     @State private var selectedDay: Int = 0            // индекс дня
@@ -122,7 +133,47 @@ struct ProductView: View {
             topControls
         }
         .navigationBarHidden(true)
-        .task { await vm.load() }
+        .task {
+            await vm.load()
+            // Весовой товар: предвыбираем первый пресет (наименьший вес).
+            if vm.mode == .product, let d = vm.detail, isWeighed(d) {
+                selectedWeight = weightPresets(d).first ?? 0
+            }
+            await loadFav()
+        }
+    }
+
+    // MARK: Избранное (через product-favorites, как в DiscoverView)
+
+    /// id товара для избранного (детальный id → seed id).
+    private var favTargetId: Int? { vm.productId ?? vm.detail?.id ?? vm.seedProduct?.id }
+
+    /// Состояние сердечка из api/v1/product-favorites/ids (тот же механизм, что в DiscoverView).
+    private func loadFav() async {
+        guard vm.mode == .product, let id = favTargetId else { return }
+        if let ids: [Int] = try? await API.shared.list("api/v1/product-favorites/ids") {
+            let fav = ids.contains(id)
+            await MainActor.run {
+                favSyncing = true
+                isFav = fav
+                // Сброс на следующем тике: onChange(of: isFav) уже отработает при favSyncing == true.
+                DispatchQueue.main.async { favSyncing = false }
+            }
+        }
+    }
+
+    /// Оптимистичный тоггл: POST/DELETE api/v1/product-favorites/{id}, откат при ошибке.
+    private func toggleFav() {
+        guard !favSyncing, let id = favTargetId else { return }
+        let on = isFav
+        Task {
+            do {
+                if on { try await API.shared.postVoid("api/v1/product-favorites/\(id)") }
+                else  { try await API.shared.deleteVoid("api/v1/product-favorites/\(id)") }
+            } catch {
+                await MainActor.run { isFav.toggle() }   // откат
+            }
+        }
     }
 
     // MARK: Content
@@ -219,6 +270,11 @@ struct ProductView: View {
     // MARK: Product sections (Размер порции / Добавить к блюду)
 
     @ViewBuilder private var productSections: some View {
+        // Весовой/дробный товар: ряд чипов-пресетов (0.3 / 0.5 / 1 кг) с ценой за выбранный вес.
+        if let d = vm.detail, isWeighed(d) {
+            weightSection(d)
+        }
+
         let groups = vm.detail?.modifierGroups ?? []
         // Радио-группа (Размер порции): type == "single" / isRequired.
         let radioGroups = groups.filter { ($0.type ?? "") == "single" || ($0.maxQty ?? 0) == 1 }
@@ -259,6 +315,120 @@ struct ProductView: View {
             }
             .padding(.top, 18)
         }
+
+        // Похожие товары — секции нет, если список пуст.
+        if !vm.recommended.isEmpty {
+            recommendedSection
+        }
+    }
+
+    // MARK: Весовые товары (чипы-пресеты + цена за вес)
+
+    /// Весовой/дробный товар: явный флаг qtyFractional, заданные qtyPresets, либо весовая единица.
+    private func isWeighed(_ d: ProductDetail) -> Bool {
+        if (d.qtyFractional ?? 0) == 1 { return true }
+        if !(d.qtyPresets ?? "").trimmingCharacters(in: .whitespaces).isEmpty { return true }
+        let u = (d.unit ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+        return ["кг", "г", "kg", "g", "л", "l", "мл", "ml"].contains(u)
+    }
+
+    /// Пресеты веса из строки ("0.3,0.5,1"); если пусто — дефолт 0.3 / 0.5 / 1.
+    private func weightPresets(_ d: ProductDetail) -> [Double] {
+        let ps = (d.qtyPresets ?? "").split(separator: ",")
+            .compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            .filter { $0 > 0 }.sorted()
+        return ps.isEmpty ? [0.3, 0.5, 1.0] : ps
+    }
+
+    /// Точный Decimal для веса из Double (через строку — без Double-погрешности).
+    private func decWeight(_ w: Double) -> Decimal {
+        let s = (w == w.rounded() ? String(Int(w)) : String(w))
+        return Decimal(string: s) ?? Decimal(w)
+    }
+
+    /// Цена за выбранный вес: price × preset (строго Decimal).
+    private func weightPrice(_ d: ProductDetail, _ w: Double) -> Decimal {
+        Money.dec(d.price) * decWeight(w)
+    }
+
+    @ViewBuilder private func weightSection(_ d: ProductDetail) -> some View {
+        let presets = weightPresets(d)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Вес")
+                    .font(.system(size: 16, weight: .heavy))
+                    .foregroundStyle(YMColor.text)
+                Spacer()
+                // Цена за выбранный вес.
+                Text(Money.format(weightPrice(d, selectedWeight)))
+                    .font(.system(size: 16, weight: .heavy))
+                    .foregroundStyle(YMColor.text)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(presets, id: \.self) { v in
+                        weightChip(v, unit: d.unit)
+                    }
+                }
+            }
+        }
+        .padding(.top, 20)
+    }
+
+    private func weightChip(_ v: Double, unit: String?) -> some View {
+        let active = abs(selectedWeight - v) < 0.0001
+        return Button {
+            Haptics.selection()
+            selectedWeight = v
+        } label: {
+            Text(fmtQty(v, unit))
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(active ? YMColor.accent : YMColor.text)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+                .background(active ? YMColor.accent.opacity(0.10) : YMColor.surface,
+                            in: RoundedRectangle(cornerRadius: YMRadius.control, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: YMRadius.control, style: .continuous)
+                    .strokeBorder(active ? YMColor.accent : YMColor.hairline, lineWidth: active ? 1.5 : 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: Похожие товары
+
+    private var recommendedSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Похожие товары")
+                .font(.system(size: 16, weight: .heavy))
+                .foregroundStyle(YMColor.text)
+                .padding(.top, 28)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: YMSpace.md) {
+                    ForEach(Array(vm.recommended.enumerated()), id: \.element.id) { idx, p in
+                        recommendedCard(p, tone: idx)
+                    }
+                }
+                .padding(.vertical, YMSpace.sm)
+            }
+            .padding(.top, 6)
+        }
+    }
+
+    private func recommendedCard(_ p: Product, tone: Int) -> some View {
+        NavigationLink { ProductView(product: p) } label: {
+            VStack(alignment: .leading, spacing: 7) {
+                PhotoPlaceholder(url: API.imageURL(p.photo), label: "ФОТО", radius: 16, tone: tone)
+                    .frame(width: 150, height: 96)
+                Text(p.name ?? "—")
+                    .font(.system(size: 13.5, weight: .bold))
+                    .foregroundStyle(YMColor.text).lineLimit(1)
+                Text(Money.format(Money.dec(p.price)))
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(YMColor.accent)
+            }
+            .frame(width: 150, alignment: .leading)
+        }
+        .buttonStyle(CardPressStyle())
     }
 
     /// Радио-строка: выбранная — золотая рамка + золотая точка.
@@ -456,7 +626,11 @@ struct ProductView: View {
             }
             .buttonStyle(.plain)
             Spacer()
-            HeartButton(isFav: $isFav, size: 38)
+            // Сердечко товара показываем только в режиме товара (у услуги избранного нет).
+            if vm.mode == .product {
+                HeartButton(isFav: $isFav, size: 38)
+                    .onChange(of: isFav) { _ in toggleFav() }
+            }
         }
         .padding(.horizontal, YMSpace.xl)
         .padding(.top, 8)
@@ -478,30 +652,32 @@ struct ProductView: View {
     // Степпер −/N/+ + кнопка «В корзину · СУММА».
     private var productBottomBar: some View {
         HStack(spacing: 12) {
-            // Степпер на surface2, «+» золото.
-            HStack(spacing: 4) {
-                Button { decQty() } label: {
-                    Image(systemName: "minus")
-                        .font(.system(size: 18, weight: .bold))
+            // Степпер −/N/+ показываем только для штучных: у весового кол-во задаёт чип-пресет.
+            if !isWeighedProduct {
+                HStack(spacing: 4) {
+                    Button { decQty() } label: {
+                        Image(systemName: "minus")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(YMColor.text)
+                            .frame(width: 38, height: 38)
+                    }
+                    .buttonStyle(.plain)
+                    Text(qtyLabel)
+                        .font(.system(size: 17, weight: .heavy))
                         .foregroundStyle(YMColor.text)
-                        .frame(width: 38, height: 38)
+                        .frame(minWidth: 28)
+                    Button { incQty() } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(YMColor.onAccent)
+                            .frame(width: 38, height: 38)
+                            .background(YMColor.accent, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
-                Text(qtyLabel)
-                    .font(.system(size: 17, weight: .heavy))
-                    .foregroundStyle(YMColor.text)
-                    .frame(minWidth: 28)
-                Button { incQty() } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundStyle(YMColor.onAccent)
-                        .frame(width: 38, height: 38)
-                        .background(YMColor.accent, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                }
-                .buttonStyle(.plain)
+                .padding(4)
+                .background(YMColor.surface2, in: RoundedRectangle(cornerRadius: YMRadius.control, style: .continuous))
             }
-            .padding(4)
-            .background(YMColor.surface2, in: RoundedRectangle(cornerRadius: YMRadius.control, style: .continuous))
 
             Button {
                 addToCart()
@@ -617,8 +793,18 @@ struct ProductView: View {
         if nq >= stepValue { qty = nq }
     }
 
-    /// Цена строки: (цена товара + сумма выбранных модификаторов) × qty.
-    /// ИТОГ модификаторов суммируем локально (option.price) — сервер финализирует при заказе.
+    /// Весовой товар: количество задаёт выбранный чип-пресет, а не штучный степпер.
+    private var isWeighedProduct: Bool {
+        if let d = vm.detail { return isWeighed(d) }
+        return false
+    }
+
+    /// Кол-во, которое кладём в корзину: вес-пресет для весового, иначе штучное qty.
+    private var effectiveQty: Double { isWeighedProduct ? selectedWeight : qty }
+
+    /// Цена строки: (цена товара + сумма выбранных модификаторов) × кол-во.
+    /// Для весового кол-во = выбранный вес (точный Decimal). ИТОГ модификаторов суммируем
+    /// локально (option.price) — сервер финализирует при заказе.
     private var lineTotal: Decimal {
         guard let d = vm.detail else { return 0 }
         let base = Money.dec(d.price)
@@ -630,7 +816,8 @@ struct ProductView: View {
         for id in checkedAddons {
             if let opt = allOptions.first(where: { $0.id == id }) { mods += Money.dec(opt.price) }
         }
-        return (base + mods) * Money.dec(qty)
+        let mult = isWeighedProduct ? decWeight(selectedWeight) : Money.dec(qty)
+        return (base + mods) * mult
     }
 
     private var selectedModifierIds: [Int] {
@@ -657,13 +844,15 @@ struct ProductView: View {
 
     private func commitAdd(_ d: ProductDetail) {
         let allOptions = (d.modifierGroups ?? []).flatMap { $0.options ?? [] }
+        // Весовой товар кладём с qty = выбранный вес-пресет; штучный — целым qty.
+        // Cart.add сам сохранит unit/qtyFractional/qtyPresets из ProductDetail.
         Cart.shared.add(
             product: d,
             modifierIds: selectedModifierIds,
             options: allOptions,
             shopId: d.shopId ?? 0,
             shopName: d.shopName,
-            qty: qty
+            qty: effectiveQty
         )
         added = true
         Haptics.success()

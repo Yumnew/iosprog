@@ -317,10 +317,27 @@ private struct OrderCard: View {
     private var enRoute: Bool { OrderFlow.isEnRoute(order.status) }
     private var cancelled: Bool { OrderFlow.isCancelled(order.status) }
 
-    /// ETA-подпись: относительная дата/строка createdAt (детального ETA в списке нет).
+    /// Подпись справа в строке статуса.
+    /// Для отменённых/доставленных — их статус; иначе — реальная дата/время заказа
+    /// из created_at в формате «DD.MM, HH:mm» (паритет с Android formatOrderWhen).
     private var etaText: String {
         if cancelled { return "отменён" }
-        return DateFmt.short(order.createdAt)
+        if OrderFlow.isDone(order.status) { return "доставлен" }
+        return Self.formatOrderWhen(order.createdAt)
+    }
+
+    /// «2026-07-03 16:00:00» / ISO → «03.07, 16:00». Разбор текстом (без зависимости от локали
+    /// парсера) — как в Android: если не удалось — показываем строку как есть.
+    static func formatOrderWhen(_ createdAt: String?) -> String {
+        guard let s = createdAt, !s.trimmingCharacters(in: .whitespaces).isEmpty else { return "" }
+        let time = s.range(of: #"\d{2}:\d{2}"#, options: .regularExpression).map { String(s[$0]) }
+        var day: String?
+        if let r = s.range(of: #"\d{4}-\d{2}-\d{2}"#, options: .regularExpression) {
+            let parts = s[r].split(separator: "-")          // [yyyy, MM, dd]
+            if parts.count == 3 { day = "\(parts[2]).\(parts[1])" }
+        }
+        let joined = [day, time].compactMap { $0 }.joined(separator: ", ")
+        return joined.isEmpty ? s.trimmingCharacters(in: .whitespaces) : joined
     }
 
     var body: some View {

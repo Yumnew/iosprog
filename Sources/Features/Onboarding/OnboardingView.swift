@@ -12,6 +12,7 @@ struct OnboardingView: View {
 
     private enum Step { case welcome, city }
     @State private var step: Step = .welcome
+    @State private var showAuth = false
 
     var body: some View {
         ZStack {
@@ -19,7 +20,7 @@ struct OnboardingView: View {
             case .welcome:
                 WelcomeStep(
                     onStart: { advanceToCity() },
-                    onHasAccount: { advanceToCity() }   // экран входа — следующая волна; ведёт к выбору города
+                    onHasAccount: { showAuth = true }   // вход по телефону/паролю
                 )
                 .transition(.opacity)
             case .city:
@@ -28,6 +29,11 @@ struct OnboardingView: View {
             }
         }
         .background(YMColor.bg.ignoresSafeArea())
+        .sheet(isPresented: $showAuth) {
+            NavigationStack {
+                AuthView(onAuthed: { showAuth = false; advanceToCity() })
+            }
+        }
     }
 
     private func advanceToCity() {

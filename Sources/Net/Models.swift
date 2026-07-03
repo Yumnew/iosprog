@@ -55,6 +55,10 @@ struct OrgCategory: Codable, Identifiable, Hashable {
 }
 struct ShopDetail: Codable, Identifiable {
     let id: Int; let slug: String?; let name: String?; let logo: String?; let cover: String?; let banner: String?
+    // Режим организации: "service" = запись на услуги, иначе магазин/меню (аддитивно, как на Android).
+    let mode: String?
+    // Кол-во оценок для сводки отзывов (аддитивно; сервер отдаёт reviews_count).
+    @LenientInt var reviewsCount: Int?
     let description: String?; let address: String?; let phone: String?; @LenientDouble var rating: Double?
     @LenientDouble var lat: Double?; @LenientDouble var lng: Double?; let hours: [ShopHour]?
     @LenientDouble var deliveryFee: Double?; @LenientDouble var minOrder: Double?; let deliveryTime: String?; let categories: [Category]?

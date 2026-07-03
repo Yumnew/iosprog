@@ -58,9 +58,8 @@ struct ProfileView: View {
     @State private var bookingsCount = 0
     @State private var unreadNotifs = 0
 
-    // Внутренняя навигация (когда колбэки не переданы).
-    @State private var pushAddresses = false
-    @State private var pushBookings = false
+    // Внутренняя навигация по разделам профиля (стек маршрутов).
+    @State private var path = NavigationPath()
 
     @State private var showLogoutConfirm = false
     @State private var showDeleteConfirm = false
@@ -69,7 +68,7 @@ struct ProfileView: View {
     private var avatarLetter: String { String((profile?.name ?? "U").prefix(1)).uppercased() }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 VStack(spacing: 0) {
                     if session.isLoggedIn {
@@ -87,8 +86,9 @@ struct ProfileView: View {
             .background(YMColor.bg.ignoresSafeArea())
             .navigationTitle("Профиль")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationDestination(isPresented: $pushAddresses) { AddressesView() }
-            .navigationDestination(isPresented: $pushBookings) { BookingsView() }
+            .navigationDestination(for: ProfileRoute.self) { route in
+                profileDestination(route)
+            }
         }
         .task { if session.isLoggedIn { await load() } }
         .onChange(of: session.isLoggedIn) { logged in
@@ -102,6 +102,28 @@ struct ProfileView: View {
                             isPresented: $showDeleteConfirm, titleVisibility: .visible) {
             Button("Удалить аккаунт", role: .destructive) { deleteAccount() }
             Button("Отмена", role: .cancel) {}
+        }
+    }
+
+    // ── Экраны разделов профиля (единый билдер для NavigationPath) ──
+    @ViewBuilder
+    private func profileDestination(_ route: ProfileRoute) -> some View {
+        switch route {
+        case .addresses:    AddressesView()
+        case .bookings:     BookingsView()
+        case .notifications: NotificationsView()
+        case .editProfile:  EditProfileView()
+        case .settings:     SettingsView()
+        case .support:      SupportView()
+        case .plus:         PlusView()
+        case .loyalty:      LoyaltyView()
+        case .bonuses:      BonusesView()
+        case .referral:     ReferralView()
+        case .gift:         GiftCardView()
+        case .jobs:         JobsView()
+        case .applications: ApplicationsView()
+        case .returns:      ReturnsView()
+        case .auth:         AuthView()
         }
     }
 
@@ -187,34 +209,56 @@ struct ProfileView: View {
         .padding(.top, YMSpace.lg)
     }
 
-    // ── Меню ──
-    private var menu: some View {
+    // ── Программы и бонусы ──
+    private var loyaltyMenu: some View {
         VStack(spacing: 0) {
-            menuRow(icon: "📍", label: "Адреса доставки") { openAddresses() }
+            menuRow(icon: "⭐️", label: "Yumurta Plus") { path.append(ProfileRoute.plus) }
             divider
-            menuRow(icon: "🔔", label: "Уведомления", badge: unreadNotifs > 0 ? "\(unreadNotifs)" : nil) {
-                onOpenNotifications?()
-                // TODO(nav): NotificationsView ещё не в новом клиенте — колбэк наверх, иначе no-op.
-            }
+            menuRow(icon: "🏆", label: "Уровень лояльности") { path.append(ProfileRoute.loyalty) }
             divider
-            menuRow(icon: "💳", label: "Способы оплаты") {
-                onOpenPayment?()
-                // TODO(nav): экран оплаты в новом клиенте не реализован — колбэк наверх.
-            }
+            menuRow(icon: "💰", label: "Бонусы") { path.append(ProfileRoute.bonuses) }
             divider
-            menuRow(icon: "📅", label: "Мои записи") { openBookings() }
+            menuRow(icon: "🎁", label: "Подарочная карта") { path.append(ProfileRoute.gift) }
             divider
-            menuRow(icon: "🛟", label: "Поддержка") {
-                onOpenSupport?()
-                // TODO(nav): экран поддержки/чата в новом клиенте не связан — колбэк наверх.
-            }
+            menuRow(icon: "🤝", label: "Пригласить друга") { path.append(ProfileRoute.referral) }
             divider
-            menuRow(icon: "🚪", label: "Выйти", danger: true, chevron: false) { showLogoutConfirm = true }
+            menuRow(icon: "↩️", label: "Возвраты") { path.append(ProfileRoute.returns) }
+            divider
+            menuRow(icon: "💼", label: "Вакансии") { path.append(ProfileRoute.jobs) }
+            divider
+            menuRow(icon: "📝", label: "Мои отклики") { path.append(ProfileRoute.applications) }
         }
         .background(YMColor.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(YMColor.hairline, lineWidth: 1))
         .padding(.horizontal, YMSpace.xl)
         .padding(.top, YMSpace.lg)
+    }
+
+    // ── Меню ──
+    private var menu: some View {
+        VStack(spacing: YMSpace.lg) {
+            loyaltyMenu
+            VStack(spacing: 0) {
+                menuRow(icon: "✏️", label: "Редактировать профиль") { path.append(ProfileRoute.editProfile) }
+                divider
+                menuRow(icon: "📍", label: "Адреса доставки") { openAddresses() }
+                divider
+                menuRow(icon: "🔔", label: "Уведомления", badge: unreadNotifs > 0 ? "\(unreadNotifs)" : nil) {
+                    path.append(ProfileRoute.notifications)
+                }
+                divider
+                menuRow(icon: "📅", label: "Мои записи") { openBookings() }
+                divider
+                menuRow(icon: "⚙️", label: "Настройки") { path.append(ProfileRoute.settings) }
+                divider
+                menuRow(icon: "🛟", label: "Поддержка") { path.append(ProfileRoute.support) }
+                divider
+                menuRow(icon: "🚪", label: "Выйти", danger: true, chevron: false) { showLogoutConfirm = true }
+            }
+            .background(YMColor.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(YMColor.hairline, lineWidth: 1))
+            .padding(.horizontal, YMSpace.xl)
+        }
     }
 
     private var divider: some View {
@@ -272,6 +316,12 @@ struct ProfileView: View {
             Text("Войдите, чтобы видеть профиль, записи и избранное.")
                 .font(YMFont.callout).foregroundStyle(YMColor.muted).multilineTextAlignment(.center)
                 .padding(.horizontal, YMSpace.xxxl)
+            Button { Haptics.light(); path.append(ProfileRoute.auth) } label: {
+                Text("Войти в аккаунт").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(YMPrimaryButtonStyle())
+            .padding(.horizontal, YMSpace.xxxl)
+            .padding(.top, YMSpace.md)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 80)
@@ -279,10 +329,10 @@ struct ProfileView: View {
 
     // ── Actions ──
     private func openAddresses() {
-        if let cb = onOpenAddresses { cb() } else { pushAddresses = true }
+        if let cb = onOpenAddresses { cb() } else { path.append(ProfileRoute.addresses) }
     }
     private func openBookings() {
-        if let cb = onOpenBookings { cb() } else { pushBookings = true }
+        if let cb = onOpenBookings { cb() } else { path.append(ProfileRoute.bookings) }
     }
 
     private func logout() {
@@ -328,6 +378,12 @@ struct ProfileView: View {
         if (2...4).contains(m10) && !(12...14).contains(m100) { return "записи" }
         return "записей"
     }
+}
+
+/// Разделы профиля для NavigationPath (значения-маршруты).
+private enum ProfileRoute: Hashable {
+    case addresses, bookings, notifications, editProfile, settings, support
+    case plus, loyalty, bonuses, referral, gift, jobs, applications, returns, auth
 }
 
 /// Опция темы ↔ значение @AppStorage(AppStorageKey.theme) ("system"|"light"|"dark").
