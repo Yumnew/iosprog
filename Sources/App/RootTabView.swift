@@ -79,6 +79,7 @@ struct RootTabView: View {
             .environmentObject(cart)
             .environmentObject(router)
             .environmentObject(coord)
+            .environmentObject(Session.shared)
         }
         // ── Глобальный диалог конфликта корзины (single-store) ──
         .cartConflictDialog(

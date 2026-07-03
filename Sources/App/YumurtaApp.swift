@@ -35,6 +35,14 @@ struct YumurtaApp: App {
                     set: { if !$0 { onboarded = true } }
                 )) {
                     OnboardingView(onFinish: { onboarded = true })
+                        // ВАЖНО: модальные экраны в этом проекте НЕ наследуют
+                        // environmentObject автоматически — пробрасываем явно,
+                        // иначе @EnvironmentObject session в онбординге падает на старте.
+                        .environmentObject(session)
+                        .environmentObject(cart)
+                        .environmentObject(net)
+                        .environmentObject(router)
+                        .environmentObject(coord)
                         .preferredColorScheme(colorScheme)
                 }
                 .onOpenURL { url in router.handle(url: url) }

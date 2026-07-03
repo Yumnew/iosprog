@@ -33,6 +33,8 @@ struct OnboardingView: View {
             NavigationStack {
                 AuthView(onAuthed: { showAuth = false; advanceToCity() })
             }
+            // sheet не наследует окружение автоматически — пробрасываем session явно.
+            .environmentObject(session)
         }
     }
 
