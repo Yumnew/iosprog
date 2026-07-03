@@ -1,47 +1,49 @@
 # =============================================================================
 #  Yumurta iOS  ·  codemagic.yaml
 #  Проект: YumurtaPremium (SwiftUI, XcodeGen, bundle id ru.marketplace.client.premium)
-#  Репозиторий: github.com/yumurtaios/8-IOS-client-new  (ветка main)
+#  Репозиторий: github.com/Yumnew/iosprog  (ветка main)
 # =============================================================================
 #
-#  ЧТО НУЖНО ОДИН РАЗ НАСТРОИТЬ В UI, чтобы релизный воркфлоу заработал:
+#  ЧТО НУЖНО ОДИН РАЗ НАСТРОИТЬ В UI, чтобы РЕЛИЗНЫЙ воркфлоу заработал:
 #
 #  1) App Store Connect API-ключ в Codemagic:
 #       Teams → Integrations → Developer Portal → добавить App Store Connect API key
 #       (Issuer ID + Key ID + .p8). Роль ключа: App Manager или Admin.
-#       Имя интеграции, которое ты задашь, ВПИШИ ниже в поле
-#       integrations.app_store_connect  (сейчас там плейсхолдер YumurtaAppStoreConnect).
+#       Имя интеграции ВПИШИ в integrations.app_store_connect (сейчас плейсхолдер).
 #
 #  2) App ID в Apple Developer (portal → Identifiers):
 #       ru.marketplace.client.premium  с включёнными capability:
 #         • Push Notifications           (в проекте aps-environment = production)
 #         • Associated Domains           (applinks:yumurta.ru)
-#       Иначе автосоздание provisioning-профиля пройдёт, но подпись/экспорт
-#       упадёт из-за несовпадения entitlements.
 #
-#  3) Запись приложения в App Store Connect (bundle id ru.marketplace.client.premium).
-#       После создания — впиши числовой Apple ID приложения в var APP_STORE_APPLE_ID
-#       (нужен для авто-инкремента номера сборки TestFlight).
-#       Для самой первой сборки можно оставить 0 — тогда возьмётся встроенный BUILD_NUMBER.
+#  3) Запись приложения в App Store Connect (bundle id ru.marketplace.client.premium),
+#       затем впиши числовой Apple ID приложения в var APP_STORE_APPLE_ID
+#       (0 = взять встроенный BUILD_NUMBER — годится для первой сборки).
 #
-#  Team ID (Rovshan Mammadov): Y9Q3SKDB35  — подтягивается автоматически из API-ключа.
+#  Team ID (Rovshan Mammadov): Y9Q3SKDB35 — подтягивается из API-ключа автоматически.
+#
+#  ВАЖНО про UNSIGNED-воркфлоу: он отдаёт НЕподписанный .ipa в артефактах.
+#  На обычный айфон напрямую он не встанет — ставь через Sideloadly / AltStore
+#  (они подпишут его твоим Apple ID). Для нормальной установки без плясок —
+#  релизный воркфлоу и TestFlight.
 # =============================================================================
 
 workflows:
 
   # ---------------------------------------------------------------------------
-  # 1. UNSIGNED — быстрая проверка, что код собирается под устройство.
-  #    Без секретов и без подписи. Гоняется на каждый push и pull request.
+  # 1. UNSIGNED — собирает НЕподписанный .ipa и кладёт в артефакты (скачать/сайдлоад).
+  #    Секретов не требует. Гоняется на каждый push и pull request.
   # ---------------------------------------------------------------------------
   ios-unsigned:
-    name: iOS · Unsigned (compile check)
+    name: iOS · Unsigned IPA (sideload / compile check)
     instance_type: mac_mini_m2
-    max_build_duration: 30
+    max_build_duration: 45
     environment:
       xcode: latest
       vars:
         XCODE_PROJECT: "YumurtaPremium.xcodeproj"
         XCODE_SCHEME: "YumurtaPremium"
+        APP_NAME: "YumurtaPremium"
     triggering:
       events:
         - push
@@ -58,20 +60,32 @@ workflows:
           command -v xcodegen >/dev/null 2>&1 || brew install xcodegen
           xcodegen generate
           xcodebuild -project "$XCODE_PROJECT" -list
-      - name: Build without signing
+      - name: Archive without signing
         script: |
           #!/usr/bin/env bash
           set -euo pipefail
-          xcodebuild build \
+          xcodebuild archive \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME" \
             -configuration Release \
             -destination 'generic/platform=iOS' \
+            -archivePath "$CM_BUILD_DIR/build/$APP_NAME.xcarchive" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             2>&1 | xcbeautify
+      - name: Package unsigned .ipa
+        script: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          APP_PATH="$CM_BUILD_DIR/build/$APP_NAME.xcarchive/Products/Applications/$APP_NAME.app"
+          OUT="$CM_BUILD_DIR/build/ipa"
+          rm -rf "$OUT" && mkdir -p "$OUT/Payload"
+          cp -R "$APP_PATH" "$OUT/Payload/"
+          ( cd "$OUT" && zip -qry "$APP_NAME-unsigned.ipa" Payload && rm -rf Payload )
+          echo "Built: $OUT/$APP_NAME-unsigned.ipa"
     artifacts:
+      - build/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
 
   # ---------------------------------------------------------------------------
@@ -94,7 +108,7 @@ workflows:
         XCODE_PROJECT: "YumurtaPremium.xcodeproj"
         XCODE_SCHEME: "YumurtaPremium"
         BUNDLE_ID: "ru.marketplace.client.premium"
-        APP_STORE_APPLE_ID: 0    # <-- числовой Apple ID приложения в App Store Connect (0 = взять встроенный BUILD_NUMBER)
+        APP_STORE_APPLE_ID: 0    # <-- числовой Apple ID приложения (0 = взять встроенный BUILD_NUMBER)
     triggering:
       events:
         - tag
@@ -145,9 +159,3 @@ workflows:
         auth: integration
         submit_to_testflight: true
         # submit_to_app_store: true   # включи, когда будешь готов автоматически подавать на ревью
-      # email:
-      #   recipients:
-      #     - you@example.com
-      #   notify:
-      #     success: true
-      #     failure: true
