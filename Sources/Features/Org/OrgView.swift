@@ -48,8 +48,14 @@ final class OrgViewModel: ObservableObject {
     /// фолбэк на эвристику (есть услуги и нет товаров) — на случай старого ответа без `mode`.
     var isService: Bool {
         if let m = detail?.mode?.lowercased() { return m == "service" }
+        if let sm = seed?.shopMode?.lowercased() { return sm == "service" }
         return !services.isEmpty && products.isEmpty
     }
+
+    /// Тип организации для способов получения. ShopDetail.mode различает только "service";
+    /// store vs restaurant берём из seed Shop.shopMode ("restaurant"/"store"/"service").
+    /// Нельзя определить магазин/ресторан → фолбэк на ресторан (все три способа).
+    var isStore: Bool { seed?.shopMode?.lowercased() == "store" }
 
     func load() async {
         guard !slug.isEmpty else { error = "Нет данных заведения"; loading = false; return }
@@ -187,8 +193,8 @@ struct OrgView: View {
 
     private var sheet: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Логотип 72×72 r20 на границе.
-            HStack {
+            // Хедер: логотип 72×72 r20 слева, название + статус — рядом справа.
+            HStack(alignment: .center, spacing: 14) {
                 PhotoPlaceholder(url: API.imageURL(vm.detail?.logo ?? vm.seed?.logo),
                                  label: "ЛОГО", radius: 20, tone: 1)
                     .frame(width: 72, height: 72)
@@ -196,21 +202,19 @@ struct OrgView: View {
                     .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
                         .strokeBorder(YMColor.hairline, lineWidth: 1))
                     .shadow(color: .black.opacity(scheme == .dark ? 0.5 : 0.15), radius: 10, y: 4)
-                Spacer()
-            }
-            .padding(.top, 20)
-            .padding(.bottom, 12)
 
-            // Название 25/heavy + бейдж «Открыто».
-            HStack(alignment: .center, spacing: 10) {
-                Text(vm.detail?.name ?? vm.seed?.name ?? "—")
-                    .font(.system(size: 25, weight: .heavy))
-                    .foregroundStyle(YMColor.text)
-                    .lineLimit(2)
-                StatusPill(text: isOpen ? "Открыто" : "Закрыто",
-                           kind: isOpen ? .open : .cancel, solid: false)
+                // Название 25/heavy + бейдж «Открыто» — справа от логотипа.
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(vm.detail?.name ?? vm.seed?.name ?? "—")
+                        .font(.system(size: 25, weight: .heavy))
+                        .foregroundStyle(YMColor.text)
+                        .lineLimit(2)
+                    StatusPill(text: isOpen ? "Открыто" : "Закрыто",
+                               kind: isOpen ? .open : .cancel, solid: false)
+                }
                 Spacer(minLength: 0)
             }
+            .padding(.top, 20)
 
             // Баннер нерабочего времени: «Сейчас закрыто. Откроется <день> в <время>» + предзаказ.
             // Кнопки заказа/корзины остаются рабочими (предзаказ = обычное оформление).
@@ -249,11 +253,13 @@ struct OrgView: View {
             }
             .padding(.top, 10)
 
-            // Сегмент способов получения.
-            YMSegmented(options: Array(fulfilOptions.indices), selection: $fulfilIndex) { i in
-                fulfilOptions[i]
+            // Сегмент способов получения. Для услуг не показываем (запись — в booking-секции).
+            if !vm.isService {
+                YMSegmented(options: Array(fulfilOptions.indices), selection: $fulfilIndex) { i in
+                    fulfilOptions[i]
+                }
+                .padding(.top, 16)
             }
-            .padding(.top, 16)
 
             // Карточка адреса + мини-карта + маршрут.
             addressCard
@@ -267,8 +273,9 @@ struct OrgView: View {
                 menuSection.padding(.top, 20)
             }
 
-            // Отзывы — для всех типов организаций.
+            // Отзывы — для всех типов организаций. Сводка нажимаема → полный экран ReviewsScreen.
             OrgReviewsSection(
+                slug: vm.slug,
                 reviews: vm.reviews,
                 loading: vm.reviewsLoading,
                 error: vm.reviewsError,
@@ -509,9 +516,13 @@ struct OrgView: View {
     }
     private var categories: [Category] { vm.detail?.categories ?? [] }
 
-    /// Способы получения: услуга → Запись/Вызов на дом; магазин → Доставка/Самовывоз/За столик.
+    /// Способы получения по типу организации:
+    ///   услуга      → сегмент вообще не показываем (запись — через booking-секцию);
+    ///   магазин     → Доставка / Самовывоз;
+    ///   ресторан    → Доставка / Самовывоз / За столик (в т.ч. фолбэк, если тип неизвестен).
     private var fulfilOptions: [String] {
-        vm.isService ? ["Запись", "Вызов на дом"] : ["Доставка", "Самовывоз", "За столик"]
+        if vm.isStore { return ["Доставка", "Самовывоз"] }
+        return ["Доставка", "Самовывоз", "За столик"]
     }
 
     private var shownProducts: [Product] {

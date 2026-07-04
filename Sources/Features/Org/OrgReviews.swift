@@ -13,9 +13,11 @@ import SwiftUI
 //  Деньги здесь не участвуют. NULL-безопасность всюду.
 //
 
-// MARK: - Секция отзывов (встраивается в sheet OrgView как обычный VStack, не Scroll)
+// MARK: - Сводка отзывов (встраивается в sheet OrgView; тап → отдельный экран ReviewsScreen)
 
 struct OrgReviewsSection: View {
+    /// Slug организации — ключ загрузки полного экрана отзывов.
+    let slug: String
     let reviews: [Review]
     let loading: Bool
     let error: String?
@@ -24,30 +26,40 @@ struct OrgReviewsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Заголовок секции + сводка (средний рейтинг · кол-во).
-            HStack(alignment: .center) {
-                Text("Отзывы")
-                    .font(.system(size: 20, weight: .heavy))
-                    .foregroundStyle(YMColor.text)
-                Spacer(minLength: 8)
-                let cnt = reviewsCount ?? 0
-                if cnt > 0 || (avgRating ?? 0) > 0 {
-                    HStack(spacing: 6) {
-                        Image(systemName: "star.fill")
-                            .font(.system(size: 14))
-                            .foregroundStyle(YMColor.accent)
-                        Text(fmtRating1(avgRating))
-                            .font(.system(size: 16, weight: .heavy))
-                            .foregroundStyle(YMColor.text)
-                        if cnt > 0 {
-                            Text("· \(pluralReviews(cnt))")
-                                .font(.system(size: 13))
-                                .foregroundStyle(YMColor.muted)
+            // Нажимаемая строка «Отзывы · ★N · N отзывов ›» — push на полный экран.
+            NavigationLink {
+                ReviewsScreen(slug: slug, avgRating: avgRating, reviewsCount: reviewsCount)
+            } label: {
+                HStack(alignment: .center, spacing: 8) {
+                    Text("Отзывы")
+                        .font(.system(size: 20, weight: .heavy))
+                        .foregroundStyle(YMColor.text)
+                    Spacer(minLength: 8)
+                    let cnt = reviewsCount ?? 0
+                    if cnt > 0 || (avgRating ?? 0) > 0 {
+                        HStack(spacing: 6) {
+                            Image(systemName: "star.fill")
+                                .font(.system(size: 14))
+                                .foregroundStyle(YMColor.accent)
+                            Text(fmtRating1(avgRating))
+                                .font(.system(size: 16, weight: .heavy))
+                                .foregroundStyle(YMColor.text)
+                            if cnt > 0 {
+                                Text("· \(pluralReviews(cnt))")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(YMColor.muted)
+                            }
                         }
                     }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(YMColor.muted)
                 }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
 
+            // Краткое превью: первые 2 отзыва (или состояние загрузки/пусто).
             Group {
                 if loading {
                     VStack(spacing: 10) {
@@ -61,7 +73,22 @@ struct OrgReviewsSection: View {
                     ReviewsNotice(text: "Пока нет отзывов. Будьте первым!")
                 } else {
                     VStack(spacing: 10) {
-                        ForEach(reviews) { r in ReviewCard(review: r) }
+                        ForEach(reviews.prefix(2)) { r in OrgReviewCard(review: r) }
+                    }
+                    if reviews.count > 2 {
+                        NavigationLink {
+                            ReviewsScreen(slug: slug, avgRating: avgRating, reviewsCount: reviewsCount)
+                        } label: {
+                            Text("Все отзывы ›")
+                                .font(.system(size: 14.5, weight: .bold))
+                                .foregroundStyle(YMColor.accent)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(YMColor.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .strokeBorder(YMColor.hairline, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -72,7 +99,7 @@ struct OrgReviewsSection: View {
 
 // MARK: - Карточка отзыва
 
-private struct ReviewCard: View {
+struct OrgReviewCard: View {
     let review: Review
 
     var body: some View {

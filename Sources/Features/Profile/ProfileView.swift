@@ -51,6 +51,10 @@ struct ProfileView: View {
     }
 
     @AppStorage(AppStorageKey.theme) private var theme = "system"
+    /// Тема экрана из выбранного оформления (реактивно через @AppStorage).
+    private var themeScheme: ColorScheme? {
+        switch theme { case "light": return .light; case "dark": return .dark; default: return nil }
+    }
 
     @State private var profile: Profile?
     @State private var ordersCount = 0
@@ -90,6 +94,10 @@ struct ProfileView: View {
                 profileDestination(route)
             }
         }
+        // Профиль открывается модально (sheet) и НЕ наследует preferredColorScheme
+        // корневого экрана — применяем тему здесь же, чтобы смена «Светлая/Тёмная»
+        // менялась на экране профиля сразу, без переоткрытия.
+        .preferredColorScheme(themeScheme)
         .task { if session.isLoggedIn { await load() } }
         .onChange(of: session.isLoggedIn) { logged in
             if logged { Task { await load() } } else { profile = nil }
@@ -212,10 +220,7 @@ struct ProfileView: View {
     // ── Программы и бонусы ──
     private var loyaltyMenu: some View {
         VStack(spacing: 0) {
-            menuRow(icon: "⭐️", label: "Yumurta Plus") { path.append(ProfileRoute.plus) }
-            divider
-            menuRow(icon: "🏆", label: "Уровень лояльности") { path.append(ProfileRoute.loyalty) }
-            divider
+            // Yumurta Plus и «Уровень лояльности» временно скрыты по требованию.
             menuRow(icon: "💰", label: "Бонусы") { path.append(ProfileRoute.bonuses) }
             divider
             menuRow(icon: "🎁", label: "Подарочная карта") { path.append(ProfileRoute.gift) }

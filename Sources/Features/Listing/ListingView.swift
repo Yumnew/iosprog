@@ -53,11 +53,21 @@ final class ListingViewModel: ObservableObject {
     // Фильтры-чипы: индекс → активность (по набору для контекста).
     @Published var activeFilters: Set<String> = []
 
+    // Категории раздела (Магазины/Услуги). Ряд-чипов + выбранная категория (nil = «Все»).
+    @Published var categories: [OrgCategory] = []
+    @Published var pickedCategoryId: Int?
+
     let screen: Screen
     let orgType: String        // restaurant | store | service | all
     let cityId: Int?
     let shop: Shop?
     let title: String
+
+    /// Показывать ряд категорий: только раздел организаций типа store/service
+    /// (сервер org-categories/with-counts отдаёт данные лишь для них).
+    var showCategoryRow: Bool {
+        screen == .category && (orgType == "store" || orgType == "service")
+    }
 
     init(orgType: String, title: String, cityId: Int?) {
         screen = .category; self.orgType = orgType; self.cityId = cityId
@@ -73,6 +83,21 @@ final class ListingViewModel: ObservableObject {
         screen == .shop ? ["Скидки", "Халяль", "Новинки"] : ["Открыто", "Бесплатная доставка", "4.5+"]
     }
 
+    /// Категории раздела (грузим один раз при входе, только для store/service).
+    func loadCategories() async {
+        guard showCategoryRow else { return }
+        var q: [String: String] = ["type": orgType]
+        if let cid = cityId { q["city_id"] = String(cid) }
+        categories = (try? await API.shared.list("api/v1/org-categories/with-counts", query: q)) ?? []
+    }
+
+    /// Выбор категории в ряду (nil = «Все») → перезагрузка списка организаций.
+    func pickCategory(_ id: Int?) async {
+        guard pickedCategoryId != id else { return }
+        pickedCategoryId = id
+        await load()
+    }
+
     func load() async {
         loading = true; error = nil
         switch screen {
@@ -84,6 +109,7 @@ final class ListingViewModel: ObservableObject {
                     orgs = try await API.shared.list("api/v1/shops", query: q)
                 } else {
                     q["type"] = orgType
+                    if let catId = pickedCategoryId { q["category_id"] = String(catId) }
                     orgs = try await API.shared.list("api/v1/organizations", query: q)
                 }
             } catch is CancellationError {
@@ -148,6 +174,9 @@ struct ListingView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if vm.showCategoryRow && !vm.categories.isEmpty {
+                categoryRow
+            }
             filterRow
             if vm.loading {
                 loadingState
@@ -159,7 +188,10 @@ struct ListingView: View {
         }
         .background(YMColor.bg.ignoresSafeArea())
         .navigationBarHidden(true)
-        .task { await vm.load() }
+        .task {
+            await vm.loadCategories()
+            await vm.load()
+        }
         .sheet(isPresented: $showSort) {
             SortSheet(selection: $vm.sort)
                 .presentationDetents([.height(360)])
@@ -221,6 +253,28 @@ struct ListingView: View {
         if n1 == 1 { return "заведение" }
         if n1 >= 2 && n1 <= 4 { return "заведения" }
         return "заведений"
+    }
+
+    // MARK: Category row (раздел Магазины/Услуги → фильтр по категории)
+
+    private var categoryRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                // «Все» — сброс категории.
+                Chip(label: "Все", active: vm.pickedCategoryId == nil) {
+                    Haptics.selection()
+                    Task { await vm.pickCategory(nil) }
+                }
+                ForEach(vm.categories) { cat in
+                    Chip(label: cat.name ?? "—", active: vm.pickedCategoryId == cat.id) {
+                        Haptics.selection()
+                        Task { await vm.pickCategory(cat.id) }
+                    }
+                }
+            }
+            .padding(.horizontal, YMSpace.xl)
+        }
+        .padding(.bottom, 12)
     }
 
     // MARK: Filter + sort row

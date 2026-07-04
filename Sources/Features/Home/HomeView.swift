@@ -120,6 +120,8 @@ struct HomeView: View {
     // Навигация внутри собственного стека таба (флоу как в Discover/Listing).
     @State private var pushedShop: Shop?
     @State private var pushedProduct: Int?
+    // Раздел «Магазины»/«Услуги»/«Рестораны» листингом (там ряд категорий для store/service).
+    @State private var pushedListing: (orgType: String, title: String)?
 
     // Смена города с шапки Главной.
     @State private var showCitySheet = false
@@ -171,6 +173,14 @@ struct HomeView: View {
             .navigationDestination(isPresented: Binding(
                 get: { pushedProduct != nil }, set: { if !$0 { pushedProduct = nil } }
             )) { if let id = pushedProduct { ProductView(id: id) } }
+            // Раздел «Магазины»/«Услуги»/«Рестораны» листингом (ряд категорий для store/service).
+            .navigationDestination(isPresented: Binding(
+                get: { pushedListing != nil }, set: { if !$0 { pushedListing = nil } }
+            )) {
+                if let l = pushedListing {
+                    ListingView(orgType: l.orgType, title: l.title, cityId: session.cityId)
+                }
+            }
             // Смена города с шапки: выбор → Session (id/name) + перезагрузка данных.
             .sheet(isPresented: $showCitySheet) {
                 CityPickerSheet(
@@ -299,7 +309,12 @@ struct HomeView: View {
             // «Рестораны» / организации — вертикальный список OrgCard.
             if !vm.shops.isEmpty {
                 SectionHeader(title: sectionTitle, actionTitle: "Все") {
-                    router.requestedTab = 1
+                    // «Все» → раздел листингом; для «Все» (kind=.all) уводим на Поиск, как раньше.
+                    if let type = sectionOrgType {
+                        pushedListing = (orgType: type, title: sectionTitle)
+                    } else {
+                        router.requestedTab = 1
+                    }
                 }
                 .padding(.top, 18)
                 LazyVStack(spacing: YMSpace.lg) {
@@ -332,6 +347,16 @@ struct HomeView: View {
         case .all, .restaurants: return "Рестораны"
         case .shops:             return "Магазины"
         case .services:          return "Услуги"
+        }
+    }
+
+    /// orgType раздела для листинга; nil для «Все» (там показываем общий Поиск).
+    private var sectionOrgType: String? {
+        switch vm.kind {
+        case .all:         return nil
+        case .restaurants: return "restaurant"
+        case .shops:       return "store"
+        case .services:    return "service"
         }
     }
 
