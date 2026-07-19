@@ -628,7 +628,7 @@ struct ProductView: View {
             Spacer()
             // Сердечко товара показываем только в режиме товара (у услуги избранного нет).
             if vm.mode == .product {
-                HeartButton(isFav: $isFav, size: 38)
+                HeartButton(isFav: $isFav, size: 38, favColor: YMColor.statusCancel)
                     .onChange(of: isFav) { _ in toggleFav() }
             }
         }

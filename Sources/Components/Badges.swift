@@ -19,6 +19,9 @@ struct RatingBadge: View {
 struct HeartButton: View {
     @Binding var isFav: Bool
     var size: CGFloat = 32
+    /// Цвет залитого сердечка «в избранном». По умолчанию — золото (карточки на фото),
+    /// для избранного магазина/товара передаём красный (YMColor.statusCancel).
+    var favColor: Color = YMColor.accent
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var bump = false
 
@@ -33,7 +36,7 @@ struct HeartButton: View {
         } label: {
             Image(systemName: isFav ? "heart.fill" : "heart")
                 .font(.system(size: size * 0.5, weight: .semibold))
-                .foregroundStyle(isFav ? YMColor.accent : .white)
+                .foregroundStyle(isFav ? favColor : .white)
                 .frame(width: size, height: size)
                 .background(Color.black.opacity(0.42), in: Circle())
                 .background(.ultraThinMaterial, in: Circle())

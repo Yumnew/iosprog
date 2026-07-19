@@ -56,7 +56,8 @@ struct OrgCard: View {
                             .padding(12)
                     }
                     .overlay(alignment: .topTrailing) {
-                        HeartButton(isFav: $isFav, size: 32).padding(11)
+                        // В избранном → залитое красное сердечко.
+                        HeartButton(isFav: $isFav, size: 32, favColor: YMColor.statusCancel).padding(11)
                     }
                     .overlay(alignment: .bottomTrailing) {
                         if let t = shop.deliveryTime, !t.isEmpty {
@@ -136,7 +137,8 @@ struct PopularCard: View {
                         }
                     }
                     .overlay(alignment: .topTrailing) {
-                        HeartButton(isFav: $isFav, size: 26).padding(7)
+                        // В избранном → залитое красное сердечко.
+                        HeartButton(isFav: $isFav, size: 26, favColor: YMColor.statusCancel).padding(7)
                     }
 
                 VStack(alignment: .leading, spacing: 2) {

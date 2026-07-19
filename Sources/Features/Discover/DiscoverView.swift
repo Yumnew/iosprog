@@ -270,7 +270,7 @@ private struct SearchSection: View {
                 PhotoPlaceholder(url: API.imageURL(p.photo), label: "ФОТО", radius: 16, tone: tone)
                     .frame(width: 150, height: 96)
                     .overlay(alignment: .topTrailing) {
-                        HeartButton(isFav: favProduct(p.id), size: 26).padding(6)
+                        HeartButton(isFav: favProduct(p.id), size: 26, favColor: YMColor.statusCancel).padding(6)
                     }
                 Text(p.name ?? "—")
                     .font(.system(size: 13.5, weight: .bold))
@@ -721,7 +721,7 @@ private struct FavOrgCard: View {
                                    kind: isOpen ? .open : .cancel, solid: true).padding(11)
                     }
                     .overlay(alignment: .topTrailing) {
-                        HeartButton(isFav: $isFav, size: 34).padding(11)
+                        HeartButton(isFav: $isFav, size: 34, favColor: YMColor.statusCancel).padding(11)
                     }
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(alignment: .firstTextBaseline) {
@@ -771,7 +771,7 @@ private struct FavProductCard: View {
                 PhotoPlaceholder(url: API.imageURL(product.photo), label: "ФОТО", radius: 0, tone: tone)
                     .frame(height: 120).frame(maxWidth: .infinity).clipped()
                     .overlay(alignment: .topTrailing) {
-                        HeartButton(isFav: $isFav, size: 34).padding(11)
+                        HeartButton(isFav: $isFav, size: 34, favColor: YMColor.statusCancel).padding(11)
                     }
                 VStack(alignment: .leading, spacing: 4) {
                     Text(product.name ?? "—")

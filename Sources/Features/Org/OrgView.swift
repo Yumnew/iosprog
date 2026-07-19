@@ -28,8 +28,17 @@ final class OrgViewModel: ObservableObject {
     @Published var detail: ShopDetail?
     @Published var products: [Product] = []
     @Published var services: [ServiceItem] = []
+    /// Категории товаров магазина (для меню-табов и фильтра) — грузятся отдельным
+    /// запросом по shopId, как на Android (Repo.categories(shopId)). НЕ путать с
+    /// detail.categories (категории-теги организации).
+    @Published var productCategories: [Category] = []
     @Published var loading = true
     @Published var error: String?
+
+    /// В избранном ли эта организация (синхронизируется с сервером при загрузке).
+    @Published var isFav = false
+    /// Флаг: isFav меняется программно (загрузка с сервера) — не слать тоггл в ответ.
+    var favSyncing = false
 
     // Отзывы (грузятся в фоне для всех типов организаций).
     @Published var reviews: [Review] = []
@@ -52,11 +61,6 @@ final class OrgViewModel: ObservableObject {
         return !services.isEmpty && products.isEmpty
     }
 
-    /// Тип организации для способов получения. ShopDetail.mode различает только "service";
-    /// store vs restaurant берём из seed Shop.shopMode ("restaurant"/"store"/"service").
-    /// Нельзя определить магазин/ресторан → фолбэк на ресторан (все три способа).
-    var isStore: Bool { seed?.shopMode?.lowercased() == "store" }
-
     func load() async {
         guard !slug.isEmpty else { error = "Нет данных заведения"; loading = false; return }
         loading = true; error = nil
@@ -71,14 +75,52 @@ final class OrgViewModel: ObservableObject {
             self.error = error.localizedDescription
         }
         loading = false
+        // Категории товаров магазина: отдельный запрос по shopId (паритет с Android
+        // Repo.categories(shopId)). GET api/v1/categories?shop_id=<id> -> [Category].
+        // Нужны для меню-табов и фильтра filteredProducts (product.categoryId == cat.id).
+        if let shopId = detail?.id {
+            Task { @MainActor in
+                if let cats: [Category] = try? await API.shared.list("api/v1/categories", query: ["shop_id": String(shopId)]) {
+                    productCategories = cats
+                }
+            }
+        }
         // Услуги догружаем в фоне (нужны только для фолбэк-эвристики isService).
         Task { @MainActor in
             if let r: ServicesResponse = try? await API.shared.get("api/v1/shops/\(slug)/services") {
                 services = r.services ?? []
             }
         }
+        // Избранное организации — в фоне (сердечко станет красным, если она уже в избранном).
+        Task { @MainActor in await loadFavState() }
         // Отзывы — в фоне, не задерживая показ карточки.
         Task { @MainActor in await loadReviews() }
+    }
+
+    /// Синхронизация состояния избранного с сервером. Тот же механизм, что в DiscoverView:
+    /// GET api/v1/favorites -> [Shop], isFav = содержит ли этот shop.id.
+    func loadFavState() async {
+        guard let shopId = detail?.id else { return }
+        if let favs: [Shop] = try? await API.shared.list("api/v1/favorites") {
+            let fav = favs.contains { $0.id == shopId }
+            // Программная установка: onChange увидит favSyncing == true и не пошлёт тоггл.
+            favSyncing = true
+            isFav = fav
+            DispatchQueue.main.async { self.favSyncing = false }
+        }
+    }
+
+    /// Оптимистичный тоггл избранного: POST api/v1/favorites/{id} (добавить) /
+    /// DELETE api/v1/favorites/{id} (убрать). Откат при ошибке. isFav уже переключён биндингом.
+    func toggleFav() async {
+        guard !favSyncing, let shopId = detail?.id else { return }
+        let on = isFav
+        do {
+            if on { try await API.shared.postVoid("api/v1/favorites/\(shopId)") }
+            else  { try await API.shared.deleteVoid("api/v1/favorites/\(shopId)") }
+        } catch {
+            isFav.toggle()   // откат
+        }
     }
 
     /// Отзывы заведения: GET api/v1/shops/{slug}/reviews -> [Review].
@@ -106,8 +148,6 @@ struct OrgView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var isFav = false
-    @State private var fulfilIndex = 0
     @State private var activeCat: Int = 0
     @State private var pushedProduct: Int?
     @State private var pushedService: ServiceItem?
@@ -253,13 +293,8 @@ struct OrgView: View {
             }
             .padding(.top, 10)
 
-            // Сегмент способов получения. Для услуг не показываем (запись — в booking-секции).
-            if !vm.isService {
-                YMSegmented(options: Array(fulfilOptions.indices), selection: $fulfilIndex) { i in
-                    fulfilOptions[i]
-                }
-                .padding(.top, 16)
-            }
+            // Способ получения (Доставка/Самовывоз/За столик) выбирается на оформлении,
+            // на странице организации сегмент не показываем.
 
             // Карточка адреса + мини-карта + маршрут.
             addressCard
@@ -406,7 +441,9 @@ struct OrgView: View {
             Spacer()
             HStack(spacing: 10) {
                 circleControl("square.and.arrow.up") { share() }
-                HeartButton(isFav: $isFav, size: 38)
+                // Избранное организации — красное сердечко (heart.fill, YMColor.statusCancel).
+                HeartButton(isFav: $vm.isFav, size: 38, favColor: YMColor.statusCancel)
+                    .onChange(of: vm.isFav) { _ in Task { await vm.toggleFav() } }
             }
         }
         .padding(.horizontal, YMSpace.xl)
@@ -514,16 +551,9 @@ struct OrgView: View {
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
-    private var categories: [Category] { vm.detail?.categories ?? [] }
-
-    /// Способы получения по типу организации:
-    ///   услуга      → сегмент вообще не показываем (запись — через booking-секцию);
-    ///   магазин     → Доставка / Самовывоз;
-    ///   ресторан    → Доставка / Самовывоз / За столик (в т.ч. фолбэк, если тип неизвестен).
-    private var fulfilOptions: [String] {
-        if vm.isStore { return ["Доставка", "Самовывоз"] }
-        return ["Доставка", "Самовывоз", "За столик"]
-    }
+    /// Категории для меню-табов — КАТЕГОРИИ ТОВАРОВ магазина (по shopId), а не
+    /// теги-категории организации (detail.categories). Их id совпадают с product.categoryId.
+    private var categories: [Category] { vm.productCategories }
 
     private var shownProducts: [Product] {
         activeCat == 0 ? vm.products : vm.products.filter { $0.categoryId == activeCat }
